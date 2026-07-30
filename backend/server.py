@@ -22,10 +22,43 @@ def _is_writable(stream):
     except Exception:
         return False
 
+class _PipeSafeStream:
+    """Stream wrapper that swallows EPIPE at write time.
+
+    The parent Tauri app owns our stdout/stderr pipes. When it exits —
+    keep-server-running mode, or the window before the parent watchdog
+    reacts — those pipes close, and the next progress-bar or log write
+    raises BrokenPipeError straight into whatever request handler
+    triggered it (surfaces as "[Errno 32] Broken pipe" during Whisper
+    model load). A dead log pipe is not an actionable error; drop the
+    write instead of failing the request.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, data):
+        try:
+            return self._stream.write(data)
+        except OSError:
+            return len(data)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except OSError:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 if not _is_writable(sys.stdout):
     sys.stdout = open(os.devnull, 'w')
 if not _is_writable(sys.stderr):
     sys.stderr = open(os.devnull, 'w')
+sys.stdout = _PipeSafeStream(sys.stdout)
+sys.stderr = _PipeSafeStream(sys.stderr)
 
 # PyInstaller + multiprocessing: child processes re-execute the frozen binary
 # with internal arguments. freeze_support() handles this and exits early.
@@ -274,13 +307,16 @@ if __name__ == "__main__":
 
         logger.info(f"Backend variant: {os.environ.get('VOICEBOX_BACKEND_VARIANT', 'cpu').upper()}")
 
-        # Register parent watchdog to start after server is fully ready
+        # Start the parent watchdog directly. The FastAPI app is built with
+        # an explicit lifespan=..., and FastAPI silently ignores
+        # @app.on_event("startup") handlers once a lifespan is set — the
+        # previous on_event registration never fired in production, so
+        # orphaned servers survived every app restart and later served
+        # requests over dead stdio pipes. The watchdog is a daemon thread
+        # with its own initial liveness check; it does not need the ASGI
+        # app to be ready.
         if args.parent_pid is not None:
-            _parent_pid = args.parent_pid
-            _data_dir = args.data_dir
-            @app.on_event("startup")
-            async def _on_startup():
-                _start_parent_watchdog(_parent_pid, _data_dir)
+            _start_parent_watchdog(args.parent_pid, args.data_dir)
 
         logger.info(f"Parsed arguments: host={args.host}, port={args.port}, data_dir={args.data_dir}")
 
