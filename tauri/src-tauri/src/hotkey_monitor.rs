@@ -242,19 +242,9 @@ fn apply_effect(app: &AppHandle, effect: Effect) {
             if let Some(window) = app.get_webview_window(DICTATE_WINDOW_LABEL) {
                 // The previous hide-cycle parked the window off-screen and
                 // made it click-through — undo both before showing, so the
-                // pill lands at top-center and the user can actually click
-                // the error pill / stop button.
-                //
-                // `current_monitor()` returns None when the window is off
-                // any display (our hide handler parks it at -10_000, -10_000
-                // precisely so it never intercepts clicks), so fall back to
-                // the primary monitor for the reposition.
-                let monitor = window
-                    .current_monitor()
-                    .ok()
-                    .flatten()
-                    .or_else(|| window.primary_monitor().ok().flatten());
-                if let Some(monitor) = monitor {
+                // pill lands bottom-center on the cursor's monitor and the
+                // user can actually click the error pill / stop button.
+                if let Some(monitor) = crate::pill_monitor(&window) {
                     if let Ok(win_size) = window.outer_size() {
                         let _ = window.set_position(crate::pill_position(
                             monitor.position(),

@@ -48,7 +48,7 @@ fn build_dictate_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
     .visible(false)
     .build()?;
 
-    if let Some(monitor) = window.current_monitor()? {
+    if let Some(monitor) = pill_monitor(&window) {
         let win_size = window.outer_size()?;
         window.set_position(pill_position(monitor.position(), monitor.size(), &win_size))?;
     }
@@ -60,6 +60,29 @@ fn build_dictate_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
 /// the bottom screen edge.
 #[cfg(desktop)]
 const PILL_BOTTOM_MARGIN_FRAC: f64 = 0.05;
+
+/// Monitor the pill should appear on: the one under the cursor — the
+/// user's locus of attention when the chord fires — falling back to the
+/// window's monitor, then the primary. The pill parks at
+/// (-10_000, -10_000) between cycles, so `current_monitor()` alone is
+/// usually `None`; before this helper everything collapsed to the primary
+/// monitor, which computed the position against the wrong display's
+/// bounds on multi-monitor setups and dropped the pill at a seemingly
+/// random spot.
+#[cfg(desktop)]
+pub(crate) fn pill_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let app = window.app_handle();
+    if let Ok(pos) = app.cursor_position() {
+        if let Ok(Some(monitor)) = app.monitor_from_point(pos.x, pos.y) {
+            return Some(monitor);
+        }
+    }
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+}
 
 /// Where the dictate pill sits: horizontally centered, near the bottom of
 /// the monitor with a small margin. Shared by every code path that
@@ -125,14 +148,7 @@ pub fn show_dictate_window(app: &tauri::AppHandle) {
             }
         },
     };
-    // current_monitor() returns None when the window has been parked
-    // off any display by the hide path; fall back to the primary.
-    let monitor = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.primary_monitor().ok().flatten());
-    if let Some(monitor) = monitor {
+    if let Some(monitor) = pill_monitor(&window) {
         if let Ok(win_size) = window.outer_size() {
             let _ = window.set_position(pill_position(monitor.position(), monitor.size(), &win_size));
         }
