@@ -121,6 +121,9 @@ pub fn show_dictate_window(app: &tauri::AppHandle) {
 }
 
 const LEGACY_PORT: u16 = 8000;
+#[cfg(feature = "dev-isolation")]
+pub(crate) const SERVER_PORT: u16 = 17494;
+#[cfg(not(feature = "dev-isolation"))]
 pub(crate) const SERVER_PORT: u16 = 17493;
 
 /// Find a voicebox-server process listening on a given port (Windows only).

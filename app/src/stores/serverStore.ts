@@ -28,7 +28,7 @@ function invalidateAllServerData() {
 }
 
 export function getDefaultServerUrl(): string {
-  const fallback = 'http://127.0.0.1:17493';
+  const fallback = `http://127.0.0.1:${import.meta.env.VITE_VOICEBOX_SERVER_PORT || '17493'}`;
 
   if (!import.meta.env.PROD || typeof window === 'undefined') {
     return fallback;

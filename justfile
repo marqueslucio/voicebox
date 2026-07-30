@@ -127,24 +127,8 @@ setup-js:
 
 # Start backend (if not already running) + frontend for development
 [unix]
-dev: _ensure-venv _ensure-sidecar
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    backend_pid=""
-    if curl -sf http://127.0.0.1:17493/health > /dev/null 2>&1; then
-        echo "Backend already running on http://localhost:17493"
-    else
-        echo "Starting backend on http://localhost:17493 ..."
-        {{ venv_bin }}/uvicorn backend.main:app --reload --port 17493 &
-        backend_pid=$!
-        sleep 2
-    fi
-
-    trap '[ -n "$backend_pid" ] && kill "$backend_pid" 2>/dev/null; wait' EXIT
-
-    echo "Starting Tauri desktop app..."
-    cd {{ tauri_dir }} && bun run tauri dev
+dev: _ensure-venv
+    ./script/build_and_run.sh
 
 [windows]
 dev: _ensure-venv _ensure-sidecar
