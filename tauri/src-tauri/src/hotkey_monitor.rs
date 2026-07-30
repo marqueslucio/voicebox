@@ -245,13 +245,7 @@ fn apply_effect(app: &AppHandle, effect: Effect) {
                 // pill lands bottom-center on the cursor's monitor and the
                 // user can actually click the error pill / stop button.
                 if let Some(monitor) = crate::pill_monitor(&window) {
-                    if let Ok(win_size) = window.outer_size() {
-                        let _ = window.set_position(crate::pill_position(
-                            monitor.position(),
-                            monitor.size(),
-                            &win_size,
-                        ));
-                    }
+                    let _ = window.set_position(crate::pill_position(&monitor));
                 }
                 // Skip on Linux: aborts if the window was never realized
                 // (see show_dictate_window in main.rs).

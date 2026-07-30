@@ -49,8 +49,7 @@ fn build_dictate_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
     .build()?;
 
     if let Some(monitor) = pill_monitor(&window) {
-        let win_size = window.outer_size()?;
-        window.set_position(pill_position(monitor.position(), monitor.size(), &win_size))?;
+        window.set_position(pill_position(&monitor))?;
     }
 
     Ok(window)
@@ -88,17 +87,27 @@ pub(crate) fn pill_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monit
 /// the monitor with a small margin. Shared by every code path that
 /// repositions the pill so recording, agent speech, and rebuilds all land
 /// on the same spot.
+///
+/// Computed and applied in LOGICAL coordinates. Physical positions are
+/// ambiguous across monitors with different scale factors: tao converts a
+/// `PhysicalPosition` to points using the *window's* current scale, so a
+/// pill parked near the built-in Retina display (scale 2) targeting an
+/// external scale-1 monitor got every coordinate halved — landing
+/// left-of-center at mid-height instead of bottom-center. macOS global
+/// screen space is natively in points, so logical coordinates derived
+/// from the target monitor's own scale factor are exact. The window size
+/// is the logical `DICTATE_WINDOW_*` constants — the pill is undecorated,
+/// so inner == outer.
 #[cfg(desktop)]
-pub(crate) fn pill_position(
-    monitor_pos: &tauri::PhysicalPosition<i32>,
-    monitor_size: &tauri::PhysicalSize<u32>,
-    win_size: &tauri::PhysicalSize<u32>,
-) -> PhysicalPosition<i32> {
-    let x = monitor_pos.x + (monitor_size.width as i32 - win_size.width as i32) / 2;
-    let y = monitor_pos.y + monitor_size.height as i32
-        - win_size.height as i32
-        - (monitor_size.height as f64 * PILL_BOTTOM_MARGIN_FRAC) as i32;
-    PhysicalPosition::new(x, y)
+pub(crate) fn pill_position(monitor: &tauri::Monitor) -> tauri::LogicalPosition<f64> {
+    let scale = monitor.scale_factor();
+    let pos = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    let x = pos.x + (size.width - DICTATE_WINDOW_WIDTH) / 2.0;
+    let y = pos.y + size.height
+        - DICTATE_WINDOW_HEIGHT
+        - size.height * PILL_BOTTOM_MARGIN_FRAC;
+    tauri::LogicalPosition::new(x, y)
 }
 
 /// Position, undo click-through, and show the dictate pill window.
@@ -149,9 +158,7 @@ pub fn show_dictate_window(app: &tauri::AppHandle) {
         },
     };
     if let Some(monitor) = pill_monitor(&window) {
-        if let Ok(win_size) = window.outer_size() {
-            let _ = window.set_position(pill_position(monitor.position(), monitor.size(), &win_size));
-        }
+        let _ = window.set_position(pill_position(&monitor));
     }
     // Skip on Linux: tao's CursorIgnoreEvents handler unwraps the GdkWindow,
     // which is None until the window is first shown, aborting the process.
