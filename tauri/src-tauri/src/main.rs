@@ -18,7 +18,6 @@ mod synthetic_keys;
 use std::sync::Mutex;
 use tauri::{command, State, Manager, WindowEvent, Emitter, Listener, RunEvent, WebviewUrl, WebviewWindowBuilder, PhysicalPosition};
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::mpsc;
 
 pub const DICTATE_WINDOW_LABEL: &str = "dictate";
 const DICTATE_WINDOW_WIDTH: f64 = 420.0;
@@ -50,14 +49,33 @@ fn build_dictate_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
     .build()?;
 
     if let Some(monitor) = window.current_monitor()? {
-        let monitor_size = monitor.size();
         let win_size = window.outer_size()?;
-        let x = (monitor_size.width as i32 - win_size.width as i32) / 2;
-        let y = (monitor_size.height as f64 * 0.04) as i32;
-        window.set_position(PhysicalPosition::new(x, y))?;
+        window.set_position(pill_position(monitor.position(), monitor.size(), &win_size))?;
     }
 
     Ok(window)
+}
+
+/// Fraction of the monitor height kept as padding between the pill and
+/// the bottom screen edge.
+#[cfg(desktop)]
+const PILL_BOTTOM_MARGIN_FRAC: f64 = 0.05;
+
+/// Where the dictate pill sits: horizontally centered, near the bottom of
+/// the monitor with a small margin. Shared by every code path that
+/// repositions the pill so recording, agent speech, and rebuilds all land
+/// on the same spot.
+#[cfg(desktop)]
+pub(crate) fn pill_position(
+    monitor_pos: &tauri::PhysicalPosition<i32>,
+    monitor_size: &tauri::PhysicalSize<u32>,
+    win_size: &tauri::PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    let x = monitor_pos.x + (monitor_size.width as i32 - win_size.width as i32) / 2;
+    let y = monitor_pos.y + monitor_size.height as i32
+        - win_size.height as i32
+        - (monitor_size.height as f64 * PILL_BOTTOM_MARGIN_FRAC) as i32;
+    PhysicalPosition::new(x, y)
 }
 
 /// Position, undo click-through, and show the dictate pill window.
@@ -71,6 +89,18 @@ fn build_dictate_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
 /// Build the pill webview if it doesn't exist yet. Idempotent — used by
 /// agent-speech to prime the webview on speak-start so its listeners can
 /// register before the actual show arrives from `audio.onplaying`.
+/// Restore the main window from the menu-bar tray: bring the Dock icon
+/// back (Regular activation policy), then show and focus the window.
+#[cfg(desktop)]
+fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg(desktop)]
 pub fn ensure_dictate_window(app: &tauri::AppHandle) {
     if app.get_webview_window(DICTATE_WINDOW_LABEL).is_none() {
@@ -103,13 +133,8 @@ pub fn show_dictate_window(app: &tauri::AppHandle) {
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
     if let Some(monitor) = monitor {
-        let monitor_pos = monitor.position();
-        let monitor_size = monitor.size();
         if let Ok(win_size) = window.outer_size() {
-            let x = monitor_pos.x
-                + (monitor_size.width as i32 - win_size.width as i32) / 2;
-            let y = monitor_pos.y + (monitor_size.height as f64 * 0.04) as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
+            let _ = window.set_position(pill_position(monitor.position(), monitor.size(), &win_size));
         }
     }
     // Skip on Linux: tao's CursorIgnoreEvents handler unwraps the GdkWindow,
@@ -994,7 +1019,16 @@ const POST_ACTIVATE_SETTLE_MS: u64 = 120;
 /// keystroke, before we restore the user's original clipboard contents.
 /// Too short and slow apps haven't consumed the paste yet; too long and
 /// the user sees our text if they look at their clipboard manager.
-const PASTE_CONSUME_MS: u64 = 400;
+///
+/// 2000ms, not a few hundred: AppKit apps consume the paste synchronously
+/// inside the key-event handler, but Chromium/Electron routes the
+/// accelerator through the renderer and reads NSPasteboard on a later
+/// main-thread turn — under load comfortably past 400ms. Restoring before
+/// that read makes the paste silently insert the *old* clipboard (usually
+/// nothing), which is exactly how dictation into Slack/Claude/ChatGPT
+/// failed while TextEdit worked. The changeCount guard below still lets a
+/// user copy during the window win over the restore.
+const PASTE_CONSUME_MS: u64 = 2000;
 
 /// Reports whether the process currently has macOS Accessibility trust.
 /// Used by the settings UI and the paste debug harness to decide whether
@@ -1403,6 +1437,44 @@ pub fn run() {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle().plugin(tauri_plugin_process::init())?;
 
+                // Menu-bar tray: closing the main window hides the app to
+                // the tray (no Dock icon) instead of quitting — server and
+                // global hotkey keep running, so dictation works without
+                // the window. Left click or "Open" restores the window.
+                {
+                    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+                    let open_item = MenuItemBuilder::with_id("open", "Open Voicebox").build(app)?;
+                    let quit_item = MenuItemBuilder::with_id("quit", "Quit Voicebox").build(app)?;
+                    let menu = MenuBuilder::new(app).item(&open_item).item(&quit_item).build()?;
+
+                    TrayIconBuilder::with_id("voicebox-tray")
+                        .icon(
+                            app.default_window_icon()
+                                .cloned()
+                                .expect("bundled app icon missing"),
+                        )
+                        .menu(&menu)
+                        .show_menu_on_left_click(false)
+                        .on_menu_event(|app, event| match event.id().as_ref() {
+                            "open" => show_main_window(app),
+                            "quit" => app.exit(0),
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } = event
+                            {
+                                show_main_window(tray.app_handle());
+                            }
+                        })
+                        .build(app)?;
+                }
+
                 // Resolve the active keyboard layout's V keycode now, on
                 // the main thread, and register an observer for layout
                 // changes. The synthetic-paste hot path then only reads an
@@ -1535,52 +1607,28 @@ pub fn run() {
             disable_hotkey,
             update_chord_bindings
         ])
-        .on_window_event({
-            let closing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            move |window, event| {
+        .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // If we're already in the close flow, let it proceed
-                if closing.load(std::sync::atomic::Ordering::SeqCst) {
-                    return;
+                // Closing the main window hides the app to the menu-bar
+                // tray instead of quitting: prevent the close, hide the
+                // window, and drop the Dock icon (Accessory policy). The
+                // sidecar server and the global hotkey keep running, so
+                // dictation stays available. A real quit goes through the
+                // tray's "Quit" or Cmd+Q, where RunEvent::Exit handles the
+                // server shutdown / keep-running logic. This replaced the
+                // old frontend close-handshake ("window-close-requested" /
+                // "window-close-allowed"), which is unreachable now that
+                // the X button never actually closes.
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    #[cfg(target_os = "macos")]
+                    let _ = window
+                        .app_handle()
+                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
-                closing.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                // Prevent automatic close so frontend can clean up
-                api.prevent_close();
-
-                // Emit event to frontend to check setting and stop server if needed
-                let app_handle = window.app_handle();
-
-                if let Err(e) = app_handle.emit("window-close-requested", ()) {
-                    eprintln!("Failed to emit window-close-requested event: {}", e);
-                    window.close().ok();
-                    return;
-                }
-
-                // Set up listener for frontend response
-                let window_for_close = window.clone();
-                let closing_for_timeout = closing.clone();
-                let (tx, mut rx) = mpsc::unbounded_channel::<()>();
-
-                let listener_id = window.listen("window-close-allowed", move |_| {
-                    let _ = tx.send(());
-                });
-
-                tauri::async_runtime::spawn(async move {
-                    tokio::select! {
-                        _ = rx.recv() => {
-                            window_for_close.close().ok();
-                        }
-                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-                            eprintln!("Window close timeout, closing anyway");
-                            window_for_close.close().ok();
-                        }
-                    }
-                    window_for_close.unlisten(listener_id);
-                    closing_for_timeout.store(false, std::sync::atomic::Ordering::SeqCst);
-                });
             }
-        }})
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
