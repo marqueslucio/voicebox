@@ -82,6 +82,8 @@ export interface UseCaptureRecordingSessionResult {
   isRecording: boolean;
   isUploading: boolean;
   isRefining: boolean;
+  /** One-shot mic warm-up — see useAudioRecording.prewarm. */
+  prewarmMic: () => void;
   startRecording: () => void;
   stopRecording: () => void;
   toggleRecording: () => void;
@@ -246,6 +248,7 @@ export function useCaptureRecordingSession(
   const {
     isRecording,
     duration,
+    prewarm: prewarmMic,
     startRecording: beginAudioRecording,
     stopRecording,
     error: recordError,
@@ -318,6 +321,7 @@ export function useCaptureRecordingSession(
     isRecording,
     isUploading: uploadMutation.isPending,
     isRefining: refineMutation.isPending,
+    prewarmMic,
     startRecording,
     stopRecording,
     toggleRecording,

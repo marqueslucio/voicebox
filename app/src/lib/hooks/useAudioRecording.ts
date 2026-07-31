@@ -22,6 +22,30 @@ export function useAudioRecording({
   const startTimeRef = useRef<number | null>(null);
   const cancelledRef = useRef<boolean>(false);
 
+  const prewarmedRef = useRef(false);
+
+  /**
+   * One-shot microphone warm-up: acquire and immediately release an audio
+   * stream. The first `getUserMedia` of a session pays for the TCC check
+   * and audio-driver spin-up — cold that costs 1–2 s, and every word
+   * spoken before the stream exists is physically lost, which is why the
+   * first seconds of a dictation went missing. After a warm-up the real
+   * acquisition in `startRecording` settles in a few hundred ms. Callers
+   * invoke this when the recording surface mounts (e.g. the dictate pill
+   * webview), long before the user hits the chord.
+   */
+  const prewarm = useCallback(async () => {
+    if (prewarmedRef.current) return;
+    prewarmedRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch {
+      // Permission missing or device busy — let a later attempt retry.
+      prewarmedRef.current = false;
+    }
+  }, []);
+
   const startRecording = useCallback(async () => {
     try {
       setError(null);
@@ -213,6 +237,7 @@ export function useAudioRecording({
     isRecording,
     duration,
     error,
+    prewarm,
     startRecording,
     stopRecording,
     cancelRecording,

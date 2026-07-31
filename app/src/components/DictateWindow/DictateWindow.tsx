@@ -71,6 +71,15 @@ export function DictateWindow() {
   const sessionRef = useRef(session);
   sessionRef.current = session;
 
+  // Warm the microphone path as soon as the pill webview exists — the
+  // first getUserMedia of a session pays 1–2 s of TCC + audio-driver
+  // spin-up, and every word spoken before the stream is live is lost.
+  // Warming here moves that cost to window creation (enable_hotkey),
+  // long before the first chord press.
+  useEffect(() => {
+    sessionRef.current.prewarmMic();
+  }, []);
+
   useEffect(() => {
     const unlistens: Promise<UnlistenFn>[] = [];
     unlistens.push(

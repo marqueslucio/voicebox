@@ -21,7 +21,7 @@ from .. import config
 from ..database import Capture as DBCapture
 from ..models import CaptureResponse, RefinementFlagsModel
 from ..utils.audio import load_audio
-from .refinement import RefinementFlags, refine_transcript
+from .refinement import RefinementFlags, collapse_repetitive_artifacts, refine_transcript
 from .transcribe import get_whisper_model
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,12 @@ async def create_capture(
         whisper = get_whisper_model()
         resolved_stt = stt_model or whisper.model_size
         transcript = await whisper.transcribe(str(audio_path), language, resolved_stt)
+        # Strip STT hallucination loops ("canste" × 100 when audio trails
+        # off) from the raw transcript itself, not just inside the LLM
+        # refine path — with auto-refine off the raw text is what gets
+        # pasted, and a deterministic collapse must not depend on the LLM
+        # being enabled.
+        transcript = collapse_repetitive_artifacts(transcript)
 
         row = DBCapture(
             id=capture_id,
@@ -222,6 +228,8 @@ async def retranscribe_capture(
     whisper = get_whisper_model()
     resolved_stt = stt_model or whisper.model_size
     transcript = await whisper.transcribe(str(resolved), language, resolved_stt)
+    # Same deterministic loop-strip as create_capture — see comment there.
+    transcript = collapse_repetitive_artifacts(transcript)
 
     row.transcript_raw = transcript
     row.stt_model = resolved_stt
