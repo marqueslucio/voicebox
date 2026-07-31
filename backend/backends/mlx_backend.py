@@ -344,7 +344,20 @@ class MLXSTTBackend:
             """Run synchronous transcription in thread pool."""
             # MLX Whisper transcription using generate method
             # The generate method accepts audio path directly
-            decode_options = {}
+            decode_options = {
+                # Don't feed each window's output into the next as prompt.
+                # Conditioning is what turns one bad window into a runaway
+                # repetition loop ("canste" × 100 on a trailing breath) —
+                # dictation clips are short enough that cross-window
+                # consistency loses nothing.
+                #
+                # Deliberately NOT using word_timestamps +
+                # hallucination_silence_threshold here: mlx_audio's DTW
+                # path is broken upstream (reads model.alignment_heads
+                # which its own loader never sets) and hard-crashes the
+                # process when wired up manually.
+                "condition_on_previous_text": False,
+            }
             if language:
                 decode_options["language"] = language
 

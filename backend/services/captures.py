@@ -96,6 +96,26 @@ async def create_capture(
             audio, sr = None, None
             duration_ms = None
 
+        # Trim TRAILING silence before Whisper sees the audio. Whisper
+        # hallucinates learned closing phrases on trailing silence
+        # ("Ja. Ja. Vielen Dank.", "Thanks for watching") — the quiet tail
+        # between the last spoken word and the chord release is exactly
+        # where they are born, so cut it off at the source. Tail-only on
+        # purpose: first words are often spoken quietly while the chord
+        # hand is still settling, and a leading trim was observed eating
+        # them ("Ich muss das jetzt…" → "Jetzt…"). top_db=40 is
+        # conservative — only near-silence relative to the recording's
+        # peak is dropped, quiet speech and in-sentence pauses survive.
+        trimmed = False
+        if audio is not None and sr:
+            import librosa  # already the decoder behind load_audio
+
+            _, (_, speech_end) = librosa.effects.trim(audio, top_db=40)
+            if 0 < speech_end < len(audio):
+                audio = audio[:speech_end]
+                duration_ms = int((len(audio) / sr) * 1000)
+                trimmed = True
+
         if audio is None or sr is None:
             # Decode failed. Only pass the file straight to whisper if the
             # source is a format its miniaudio loader can still read — webm,
@@ -107,6 +127,10 @@ async def create_capture(
             audio_path = raw_path
         elif suffix == ".wav":
             audio_path = raw_path
+            if trimmed:
+                # Persist the trimmed take so the stored capture, its
+                # duration, and what Whisper transcribes stay one thing.
+                sf.write(str(raw_path), audio, sr, format="WAV")
         else:
             # Transcode to WAV so downstream loaders (miniaudio, soundfile) work
             # regardless of what format the client shipped.
