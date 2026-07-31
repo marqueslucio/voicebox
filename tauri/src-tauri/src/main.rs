@@ -1478,6 +1478,12 @@ pub fn run() {
                                 .cloned()
                                 .expect("bundled app icon missing"),
                         )
+                        // Render as a template image: macOS draws the icon's
+                        // alpha channel monochrome, adapting to light/dark
+                        // menu bars. The colored app icon reads as mid-gray
+                        // and disappears against a dark menu bar otherwise.
+                        .icon_as_template(true)
+                        .tooltip("Voicebox")
                         .menu(&menu)
                         .show_menu_on_left_click(false)
                         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -1657,6 +1663,14 @@ pub fn run() {
         .run(|app, event| {
             let _ = &app; // used on unix
             match &event {
+                // macOS sends Reopen when the running app is activated
+                // again — Spotlight launch, Dock click, `open -a`. With the
+                // main window hidden to the tray this is the user's "bring
+                // it back" gesture, so restore window + Dock icon.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen { .. } => {
+                    show_main_window(app);
+                }
                 RunEvent::Exit => {
                     let state = app.state::<ServerState>();
                     let keep_running = *state.keep_running_on_close.lock().unwrap();
