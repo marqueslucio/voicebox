@@ -21,6 +21,37 @@ export function useAudioRecording({
   const timerRef = useRef<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
   const cancelledRef = useRef<boolean>(false);
+  // Chord released before MediaRecorder.onstart fired — consume in onstart
+  // so a tap shorter than the mic spin-up still terminates the recording.
+  const pendingStopRef = useRef<boolean>(false);
+  // Keeps the mic stream alive briefly after a recording so back-to-back
+  // dictations skip the getUserMedia spin-up entirely.
+  const streamReleaseTimerRef = useRef<number | null>(null);
+
+  const releaseStream = useCallback(() => {
+    if (streamReleaseTimerRef.current !== null) {
+      window.clearTimeout(streamReleaseTimerRef.current);
+      streamReleaseTimerRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  /** How long the mic stream stays open after a recording ends. The macOS
+   *  mic-in-use indicator stays lit for this window — the visible cost of
+   *  making consecutive dictations start instantly. */
+  const STREAM_KEEPALIVE_MS = 60_000;
+
+  const scheduleStreamRelease = useCallback(() => {
+    if (streamReleaseTimerRef.current !== null) {
+      window.clearTimeout(streamReleaseTimerRef.current);
+    }
+    streamReleaseTimerRef.current = window.setTimeout(() => {
+      streamReleaseTimerRef.current = null;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }, STREAM_KEEPALIVE_MS);
+  }, []);
 
   const prewarmedRef = useRef(false);
 
@@ -51,6 +82,7 @@ export function useAudioRecording({
       setError(null);
       chunksRef.current = [];
       cancelledRef.current = false;
+      pendingStopRef.current = false;
       setDuration(0);
 
       // Check if getUserMedia is available
@@ -82,15 +114,32 @@ export function useAudioRecording({
         }
       }
 
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      // Reuse the still-warm stream from the previous recording when it's
+      // alive — skips the getUserMedia spin-up entirely for back-to-back
+      // dictations. Otherwise request a fresh one.
+      if (streamReleaseTimerRef.current !== null) {
+        window.clearTimeout(streamReleaseTimerRef.current);
+        streamReleaseTimerRef.current = null;
+      }
+      let stream = streamRef.current;
+      const streamAlive =
+        stream !== null &&
+        stream.getTracks().length > 0 &&
+        stream.getTracks().every((track) => track.readyState === 'live');
+      if (!streamAlive) {
+        releaseStream();
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      }
 
+      if (!stream) {
+        throw new Error('Microphone stream unavailable');
+      }
       streamRef.current = stream;
 
       // Create MediaRecorder with preferred MIME type
@@ -123,11 +172,9 @@ export function useAudioRecording({
 
         const webmBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
 
-        // Stop all tracks now that we have the data
-        streamRef.current?.getTracks().forEach((track) => {
-          track.stop();
-        });
-        streamRef.current = null;
+        // Keep the stream warm for the next dictation instead of stopping
+        // the tracks — released by the keep-alive timer.
+        scheduleStreamRelease();
 
         // Don't fire completion callback if the recording was cancelled
         if (wasCancelled) return;
@@ -148,36 +195,47 @@ export function useAudioRecording({
         console.error('MediaRecorder error:', event);
       };
 
+      // `isRecording`, the elapsed timer, and the duration anchor only
+      // flip once capture has actually begun — the UI must not claim
+      // "Recording" while words can still be lost to mic spin-up.
+      mediaRecorder.onstart = () => {
+        // Chord already released during spin-up: end immediately. The tiny
+        // blob is surfaced as "Recording too short" by the session layer.
+        if (pendingStopRef.current) {
+          mediaRecorder.stop();
+          return;
+        }
+        setIsRecording(true);
+        startTimeRef.current = Date.now();
+
+        timerRef.current = window.setInterval(() => {
+          if (startTimeRef.current) {
+            const elapsed = (Date.now() - startTimeRef.current) / 1000;
+            setDuration(elapsed);
+
+            // Auto-stop at max duration when the caller opts in — dictation
+            // sessions pass undefined and run until the user releases the
+            // chord or hits stop; voice-clone sample recorders pass 29s to
+            // keep reference clips short.
+            if (maxDurationSeconds !== undefined && elapsed >= maxDurationSeconds) {
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+                mediaRecorderRef.current.stop();
+                setIsRecording(false);
+                if (timerRef.current !== null) {
+                  clearInterval(timerRef.current);
+                  timerRef.current = null;
+                }
+              }
+            }
+          }
+        }, 100);
+      };
+
       // WebKit's MediaRecorder drops the WebM EBML header from chunks when
       // started with a timeslice, so concatenated blobs fail to parse in
       // both AudioContext and ffmpeg. Starting with no timeslice produces
       // exactly one dataavailable on stop() with a valid container.
       mediaRecorder.start();
-      setIsRecording(true);
-      startTimeRef.current = Date.now();
-
-      // Start timer
-      timerRef.current = window.setInterval(() => {
-        if (startTimeRef.current) {
-          const elapsed = (Date.now() - startTimeRef.current) / 1000;
-          setDuration(elapsed);
-
-          // Auto-stop at max duration when the caller opts in — dictation
-          // sessions pass undefined and run until the user releases the
-          // chord or hits stop; voice-clone sample recorders pass 29s to
-          // keep reference clips short.
-          if (maxDurationSeconds !== undefined && elapsed >= maxDurationSeconds) {
-            if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-              mediaRecorderRef.current.stop();
-              setIsRecording(false);
-              if (timerRef.current !== null) {
-                clearInterval(timerRef.current);
-                timerRef.current = null;
-              }
-            }
-          }
-        }
-      }, 100);
     } catch (err) {
       const errorMessage =
         err instanceof Error
@@ -189,8 +247,12 @@ export function useAudioRecording({
   }, [maxDurationSeconds, onRecordingComplete]);
 
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+    // Mark unconditionally: if the recorder is still spinning up, onstart
+    // consumes the flag and terminates the recording right away.
+    pendingStopRef.current = true;
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === 'recording') {
+      recorder.stop();
       setIsRecording(false);
 
       if (timerRef.current !== null) {
@@ -198,34 +260,36 @@ export function useAudioRecording({
         timerRef.current = null;
       }
     }
-  }, [isRecording]);
+  }, []);
 
   const cancelRecording = useCallback(() => {
+    pendingStopRef.current = true;
     if (mediaRecorderRef.current) {
       cancelledRef.current = true; // Must be set before stop() triggers onstop
       chunksRef.current = [];
-      mediaRecorderRef.current.stop();
+      if (mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
       setIsRecording(false);
       setDuration(0);
     }
 
-    // Stop all tracks
-    streamRef.current?.getTracks().forEach((track) => {
-      track.stop();
-    });
-    streamRef.current = null;
+    releaseStream();
 
     if (timerRef.current !== null) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  }, []);
+  }, [releaseStream]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) {
         clearInterval(timerRef.current);
+      }
+      if (streamReleaseTimerRef.current !== null) {
+        clearTimeout(streamReleaseTimerRef.current);
       }
       streamRef.current?.getTracks().forEach((track) => {
         track.stop();

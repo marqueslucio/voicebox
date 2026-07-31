@@ -285,9 +285,19 @@ export function useCaptureRecordingSession(
     if (isRecording) return;
     clearRestTimer();
     setFrozenElapsedMs(0);
-    setPillState('recording');
+    // 'starting' until the MediaRecorder actually delivers audio — the
+    // pill must not claim "Recording" during mic spin-up, when words are
+    // still being lost. The effect below flips to 'recording' when
+    // isRecording turns true (MediaRecorder.onstart).
+    setPillState('starting');
     beginAudioRecording();
   }, [isRecording, beginAudioRecording, clearRestTimer]);
+
+  useEffect(() => {
+    if (isRecording && pillStateRef.current === 'starting') {
+      setPillState('recording');
+    }
+  }, [isRecording]);
 
   const toggleRecording = useCallback(() => {
     if (isRecording) {

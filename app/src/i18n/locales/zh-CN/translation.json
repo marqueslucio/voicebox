@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "{{names}} 仍需下载。打开「捕获」标签页开始下载。"
     },
     "pill": {
+      "starting": "启动中…",
       "recording": "录制中",
       "transcribing": "转录中",
       "refining": "精修中",
@@ -760,8 +761,13 @@
       }
     },
     "general": {
-      "docs": { "title": "阅读文档" },
-      "discord": { "title": "加入 Discord", "subtitle": "获取帮助 & 分享声音" },
+      "docs": {
+        "title": "阅读文档"
+      },
+      "discord": {
+        "title": "加入 Discord",
+        "subtitle": "获取帮助 & 分享声音"
+      },
       "serverUrl": {
         "title": "服务器 URL",
         "description": "Voicebox 后端服务器的地址。",

@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils/cn';
  * recording pill in the Captures tab.
  */
 export type PillState =
+  | 'starting'
   | 'recording'
   | 'transcribing'
   | 'refining'
@@ -17,6 +18,7 @@ export type PillState =
   | 'error';
 
 const PILL_LABEL_KEYS: Record<Exclude<PillState, 'rest' | 'error'>, string> = {
+  starting: 'captures.pill.starting',
   recording: 'captures.pill.recording',
   transcribing: 'captures.pill.transcribing',
   refining: 'captures.pill.refining',
@@ -27,8 +29,11 @@ const PILL_LABEL_KEYS: Record<Exclude<PillState, 'rest' | 'error'>, string> = {
 function barModeFor(
   state: Exclude<PillState, 'error'>,
 ): 'generating' | 'playing' | 'idle' {
+  // 'starting' deliberately renders the muted idle bars: the mic stream
+  // isn't live yet, and showing the playing waveform would claim audio is
+  // being captured while the first words could still be lost.
   if (state === 'recording' || state === 'speaking') return 'playing';
-  if (state === 'completed' || state === 'rest') return 'idle';
+  if (state === 'completed' || state === 'rest' || state === 'starting') return 'idle';
   return 'generating';
 }
 

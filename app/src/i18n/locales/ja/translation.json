@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "{{names}} のダウンロードがまだ必要です。キャプチャタブを開いて開始してください。"
     },
     "pill": {
+      "starting": "起動中…",
       "recording": "録音中",
       "transcribing": "文字起こし中",
       "refining": "整形中",
@@ -760,8 +761,13 @@
       }
     },
     "general": {
-      "docs": { "title": "ドキュメントを読む" },
-      "discord": { "title": "Discord に参加", "subtitle": "ヘルプやボイスの共有" },
+      "docs": {
+        "title": "ドキュメントを読む"
+      },
+      "discord": {
+        "title": "Discord に参加",
+        "subtitle": "ヘルプやボイスの共有"
+      },
       "serverUrl": {
         "title": "サーバー URL",
         "description": "Voicebox バックエンドサーバーのアドレス。",

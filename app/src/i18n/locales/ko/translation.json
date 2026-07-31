@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "{{names}}를 아직 다운로드해야 합니다. 캡처 탭을 열어 시작하세요."
     },
     "pill": {
+      "starting": "시작 중…",
       "recording": "녹음 중",
       "transcribing": "변환 중",
       "refining": "정제 중",
@@ -760,8 +761,13 @@
       }
     },
     "general": {
-      "docs": { "title": "문서 읽기" },
-      "discord": { "title": "Discord 참여하기", "subtitle": "도움말 & 음성 공유" },
+      "docs": {
+        "title": "문서 읽기"
+      },
+      "discord": {
+        "title": "Discord 참여하기",
+        "subtitle": "도움말 & 음성 공유"
+      },
       "serverUrl": {
         "title": "서버 URL",
         "description": "voicebox 백엔드 서버 주소입니다.",

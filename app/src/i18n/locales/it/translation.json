@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "Il download di {{names}} è ancora necessario. Apri la scheda Acquisizioni per iniziare."
     },
     "pill": {
+      "starting": "Avvio…",
       "recording": "Registrazione in corso",
       "transcribing": "Trascrizione in corso",
       "refining": "Perfezionamento in corso",
@@ -379,7 +380,7 @@
       "play": "Riproduci campione",
       "pause": "Pausa campione",
       "stop": "Interrompi",
-            "stopAria": "Interrompi riproduzione",
+      "stopAria": "Interrompi riproduzione",
       "position": "Posizione riproduzione campione",
       "positionValue": "{{current}} di {{total}}"
     },
@@ -1124,7 +1125,8 @@
         "title": "Passa al backend CPU",
         "description": "Disabilita l'accelerazione GPU. Potrai scaricare nuovamente il backend GPU in un secondo momento.",
         "button": "Passa a CPU"
-      },      "remove": {
+      },
+      "remove": {
         "title": "Rimuovi il backend CUDA",
         "description": "Elimina il file binario CUDA scaricato per liberare spazio sul disco.",
         "button": "Rimuovi"

@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "{{names}} aún necesitan descargarse. Abre la pestaña Capturas para empezar."
     },
     "pill": {
+      "starting": "Iniciando…",
       "recording": "Grabando",
       "transcribing": "Transcribiendo",
       "refining": "Refinando",

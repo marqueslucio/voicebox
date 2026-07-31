@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "{{names}} doivent encore être téléchargés. Ouvrez l'onglet Captures pour commencer."
     },
     "pill": {
+      "starting": "Démarrage…",
       "recording": "Enregistrement",
       "transcribing": "Transcription",
       "refining": "Correction",
@@ -760,8 +761,13 @@
       }
     },
     "general": {
-      "docs": { "title": "Lire la documentation" },
-      "discord": { "title": "Rejoindre le Discord", "subtitle": "Obtenez de l'aide et partagez des voix" },
+      "docs": {
+        "title": "Lire la documentation"
+      },
+      "discord": {
+        "title": "Rejoindre le Discord",
+        "subtitle": "Obtenez de l'aide et partagez des voix"
+      },
       "serverUrl": {
         "title": "URL du serveur",
         "description": "L'adresse de votre serveur Voicebox.",

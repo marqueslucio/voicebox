@@ -96,6 +96,7 @@
       "shortcutNotArmedDescription_other": "{{names}} 仍需下載。請開啟「擷取」分頁開始下載。"
     },
     "pill": {
+      "starting": "啟動中…",
       "recording": "錄音中",
       "transcribing": "轉錄中",
       "refining": "精修中",
@@ -760,8 +761,13 @@
       }
     },
     "general": {
-      "docs": { "title": "閱讀文件" },
-      "discord": { "title": "加入 Discord", "subtitle": "取得協助與分享聲音" },
+      "docs": {
+        "title": "閱讀文件"
+      },
+      "discord": {
+        "title": "加入 Discord",
+        "subtitle": "取得協助與分享聲音"
+      },
       "serverUrl": {
         "title": "伺服器 URL",
         "description": "Voicebox 後端伺服器的位址。",

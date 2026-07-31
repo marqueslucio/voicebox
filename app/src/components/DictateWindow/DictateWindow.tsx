@@ -90,7 +90,11 @@ export function DictateWindow() {
     );
     unlistens.push(
       listen('dictate:stop', () => {
-        if (sessionRef.current.isRecording) sessionRef.current.stopRecording();
+        // Unconditional: stopRecording is safe in every phase and marks a
+        // pending stop when the chord is released while the recorder is
+        // still spinning up ('starting'), so a fast tap can't leave a
+        // recording running.
+        sessionRef.current.stopRecording();
       }),
     );
     return () => {
