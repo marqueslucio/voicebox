@@ -7,6 +7,86 @@ interface UseAudioRecordingOptions {
   onRecordingComplete?: (blob: Blob, duration?: number) => void;
 }
 
+/**
+ * Raw capture, no voice processing. Echo cancellation / noise suppression /
+ * AGC route the mic through CoreAudio's VoiceProcessingIO unit, which costs
+ * a few hundred extra ms to start (time in which spoken words are lost) and
+ * makes macOS duck every other app's output for as long as the unit is
+ * live. Whisper wants the unprocessed signal anyway, and voice-clone
+ * reference samples are better off without AGC riding the gain.
+ */
+const MIC_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+  },
+};
+
+/** Give up waiting for the first audio frame after this long and treat the
+ *  recording as live anyway — a muted or broken input must not strand the
+ *  pill in its "starting" state forever. Measured ramp-up on a stream that
+ *  has just been acquired is ~30 ms, so this only ever fires when something
+ *  is genuinely wrong with the input. */
+const AUDIO_FLOW_TIMEOUT_MS = 600;
+
+/**
+ * Resolve once the stream actually delivers samples. `MediaRecorder.onstart`
+ * only says the encoder is armed; the capture unit can still be ramping, and
+ * during that window it emits digital silence. Polling an analyser for the
+ * first non-zero sample is the honest "the mic is live now" signal — that's
+ * what the pill's Recording label and the elapsed timer hang off.
+ *
+ * Returns a cancel function; call it to tear the probe down early.
+ */
+function probeAudioFlow(stream: MediaStream, onLive: () => void): () => void {
+  let context: AudioContext | null = null;
+  let interval: number | null = null;
+  let timeout: number | null = null;
+  let done = false;
+
+  const finish = (live: boolean) => {
+    if (done) return;
+    done = true;
+    if (interval !== null) window.clearInterval(interval);
+    if (timeout !== null) window.clearTimeout(timeout);
+    context?.close().catch(() => {});
+    context = null;
+    if (live) onLive();
+  };
+
+  try {
+    const audio = new AudioContext();
+    context = audio;
+    const analyser = audio.createAnalyser();
+    analyser.fftSize = 2048;
+    audio.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+
+    // A context that won't leave 'suspended' (autoplay policy) never feeds
+    // the analyser. Don't sit out the timeout for that — fall straight back
+    // to trusting MediaRecorder.
+    audio
+      .resume()
+      .then(() => {
+        if (audio.state !== 'running') finish(true);
+      })
+      .catch(() => finish(true));
+
+    interval = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(samples);
+      if (samples.some((value) => value !== 0)) finish(true);
+    }, 16);
+    timeout = window.setTimeout(() => finish(true), AUDIO_FLOW_TIMEOUT_MS);
+  } catch {
+    // No Web Audio (or the context refused to start) — fall back to
+    // trusting MediaRecorder rather than blocking the recording.
+    finish(true);
+  }
+
+  return () => finish(false);
+}
+
 export function useAudioRecording({
   maxDurationSeconds,
   onRecordingComplete,
@@ -24,33 +104,13 @@ export function useAudioRecording({
   // Chord released before MediaRecorder.onstart fired — consume in onstart
   // so a tap shorter than the mic spin-up still terminates the recording.
   const pendingStopRef = useRef<boolean>(false);
-  // Keeps the mic stream alive briefly after a recording so back-to-back
-  // dictations skip the getUserMedia spin-up entirely.
-  const streamReleaseTimerRef = useRef<number | null>(null);
+  const liveProbeRef = useRef<(() => void) | null>(null);
 
   const releaseStream = useCallback(() => {
-    if (streamReleaseTimerRef.current !== null) {
-      window.clearTimeout(streamReleaseTimerRef.current);
-      streamReleaseTimerRef.current = null;
-    }
+    liveProbeRef.current?.();
+    liveProbeRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
-  }, []);
-
-  /** How long the mic stream stays open after a recording ends. The macOS
-   *  mic-in-use indicator stays lit for this window — the visible cost of
-   *  making consecutive dictations start instantly. */
-  const STREAM_KEEPALIVE_MS = 60_000;
-
-  const scheduleStreamRelease = useCallback(() => {
-    if (streamReleaseTimerRef.current !== null) {
-      window.clearTimeout(streamReleaseTimerRef.current);
-    }
-    streamReleaseTimerRef.current = window.setTimeout(() => {
-      streamReleaseTimerRef.current = null;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }, STREAM_KEEPALIVE_MS);
   }, []);
 
   const prewarmedRef = useRef(false);
@@ -64,12 +124,16 @@ export function useAudioRecording({
    * acquisition in `startRecording` settles in a few hundred ms. Callers
    * invoke this when the recording surface mounts (e.g. the dictate pill
    * webview), long before the user hits the chord.
+   *
+   * Uses the same constraints as the real acquisition — a different
+   * constraint set builds a different audio unit, so warming with
+   * `{audio: true}` would warm a path we never use.
    */
   const prewarm = useCallback(async () => {
     if (prewarmedRef.current) return;
     prewarmedRef.current = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
       stream.getTracks().forEach((track) => track.stop());
     } catch {
       // Permission missing or device busy — let a later attempt retry.
@@ -114,32 +178,11 @@ export function useAudioRecording({
         }
       }
 
-      // Reuse the still-warm stream from the previous recording when it's
-      // alive — skips the getUserMedia spin-up entirely for back-to-back
-      // dictations. Otherwise request a fresh one.
-      if (streamReleaseTimerRef.current !== null) {
-        window.clearTimeout(streamReleaseTimerRef.current);
-        streamReleaseTimerRef.current = null;
-      }
-      let stream = streamRef.current;
-      const streamAlive =
-        stream !== null &&
-        stream.getTracks().length > 0 &&
-        stream.getTracks().every((track) => track.readyState === 'live');
-      if (!streamAlive) {
-        releaseStream();
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-      }
-
-      if (!stream) {
-        throw new Error('Microphone stream unavailable');
-      }
+      // Always a fresh stream: the mic is released the moment a recording
+      // ends, so nothing is ever held open between dictations (no lit
+      // mic indicator, no system-wide output ducking).
+      releaseStream();
+      const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
       streamRef.current = stream;
 
       // Create MediaRecorder with preferred MIME type
@@ -172,9 +215,9 @@ export function useAudioRecording({
 
         const webmBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
 
-        // Keep the stream warm for the next dictation instead of stopping
-        // the tracks — released by the keep-alive timer.
-        scheduleStreamRelease();
+        // Drop the mic immediately. Holding it open would keep the macOS
+        // recording indicator lit and keep other apps' audio ducked.
+        releaseStream();
 
         // Don't fire completion callback if the recording was cancelled
         if (wasCancelled) return;
@@ -196,15 +239,13 @@ export function useAudioRecording({
       };
 
       // `isRecording`, the elapsed timer, and the duration anchor only
-      // flip once capture has actually begun — the UI must not claim
+      // flip once the mic actually delivers samples — the UI must not claim
       // "Recording" while words can still be lost to mic spin-up.
-      mediaRecorder.onstart = () => {
-        // Chord already released during spin-up: end immediately. The tiny
-        // blob is surfaced as "Recording too short" by the session layer.
-        if (pendingStopRef.current) {
-          mediaRecorder.stop();
-          return;
-        }
+      const onAudioLive = () => {
+        liveProbeRef.current = null;
+        // Released while the capture unit was still ramping — stopRecording
+        // has already run, so don't arm a recording that's over.
+        if (pendingStopRef.current || mediaRecorder.state !== 'recording') return;
         setIsRecording(true);
         startTimeRef.current = Date.now();
 
@@ -231,6 +272,16 @@ export function useAudioRecording({
         }, 100);
       };
 
+      mediaRecorder.onstart = () => {
+        // Chord already released during spin-up: end immediately. The tiny
+        // blob is surfaced as "Recording too short" by the session layer.
+        if (pendingStopRef.current) {
+          mediaRecorder.stop();
+          return;
+        }
+        liveProbeRef.current = probeAudioFlow(stream, onAudioLive);
+      };
+
       // WebKit's MediaRecorder drops the WebM EBML header from chunks when
       // started with a timeslice, so concatenated blobs fail to parse in
       // both AudioContext and ffmpeg. Starting with no timeslice produces
@@ -244,7 +295,7 @@ export function useAudioRecording({
       setError(errorMessage);
       setIsRecording(false);
     }
-  }, [maxDurationSeconds, onRecordingComplete]);
+  }, [maxDurationSeconds, onRecordingComplete, releaseStream]);
 
   const stopRecording = useCallback(() => {
     // Mark unconditionally: if the recorder is still spinning up, onstart
@@ -288,14 +339,9 @@ export function useAudioRecording({
       if (timerRef.current !== null) {
         clearInterval(timerRef.current);
       }
-      if (streamReleaseTimerRef.current !== null) {
-        clearTimeout(streamReleaseTimerRef.current);
-      }
-      streamRef.current?.getTracks().forEach((track) => {
-        track.stop();
-      });
+      releaseStream();
     };
-  }, []);
+  }, [releaseStream]);
 
   return {
     isRecording,
