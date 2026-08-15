@@ -1,23 +1,31 @@
 # Voicebox — Lokaler Fork: Entwicklungsstand
 
-> Stand: 2026-07-31 | App-Version: **0.5.1** | Branch `fix/dictation-dev-isolation` = `main` = 6fbcd86, **11 Commits vor `origin/main`** | Kein Push/PR ohne explizites Go (siehe AGENTS.md)
+> Stand: 2026-08-15 | App-Version: **0.5.1** | Branch `main` = 1c54e46, **12 Commits vor `origin/main`** | Kein Push/PR ohne explizites Go (siehe AGENTS.md)
 
 Diese Datei ist die Übergabeakte für neue Agent-Sessions. Sie beschreibt den lokalen Stand dieses Forks von `jamiepine/voicebox`, nicht das Upstream-Projekt (dafür: `docs/PROJECT_STATUS.md`, Stand 02.07., veraltet).
 
-## Worktree-Layout
+## Repo-Layout
 
-| Pfad | Branch | Rolle |
-|---|---|---|
-| `05-projects/software/voicebox` | `main` | Kanonischer Checkout, nur Merge-Ziel |
-| `05-projects/software/voicebox-dictation-fix` | `fix/dictation-dev-isolation` | Arbeits-Worktree (hier bauen!), enthält Sidecar-Binaries, venv, node_modules |
+Das Repo liegt seit der Workspace-Migration (14.08.) unter `~/Code/voicebox`, die Projektakte unter `…/Helios/projects/software/voicebox` (mit `code`-Symlink). Der frühere Arbeits-Worktree `voicebox-dictation-fix` existiert nicht mehr; `fix/dictation-dev-isolation` ist in `main` gemergt. Gearbeitet wird direkt im Hauptcheckout auf `main`.
 
-Nach jedem Commit auf dem Arbeitsbranch: `git -C ../voicebox merge --no-edit fix/dictation-dev-isolation` (bisher immer Fast-Forward).
+`node_modules`, `backend/venv` und die Sidecar-Binaries sind nach der Migration **nicht** mehr vorhanden und müssen bei Bedarf neu erzeugt werden — siehe Build-Abschnitt.
 
 ## Build & Install (verbindliche Pipeline)
 
 ```bash
-# Nur bei Backend-Änderungen (PyInstaller, ~5 min):
+# Einmalig nach der Migration: JS-Dependencies
+bun install
+
+# Nur bei Backend-Änderungen (PyInstaller, ~5 min; braucht backend/venv):
 PATH="$PWD/backend/venv/bin:$PATH" ./scripts/build-server.sh
+
+# Ohne Backend-Änderung: Sidecar aus der installierten App übernehmen
+# (spart den PyInstaller-Lauf, Binaries sind identisch zur laufenden Version):
+mkdir -p tauri/src-tauri/binaries
+cp /Applications/Voicebox.app/Contents/MacOS/voicebox-server \
+   tauri/src-tauri/binaries/voicebox-server-aarch64-apple-darwin
+cp /Applications/Voicebox.app/Contents/MacOS/voicebox-mcp \
+   tauri/src-tauri/binaries/voicebox-mcp-aarch64-apple-darwin
 
 # App-Bundle (Rust/Frontend inkrementell, ~1-2 min):
 cd tauri && bun run tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
@@ -36,7 +44,16 @@ VOICEBOX_MODELS_DIR="$HOME/.cache/huggingface/hub" backend/venv/bin/python -m ba
 ```
 Echte deutsche Test-WAVs liegen unter `~/Library/Application Support/sh.voicebox.app/captures/`.
 
-## In dieser Session gefixt (Commits 8013f07..6fbcd86, alle installiert & verifiziert)
+## Session 15.08.2026 — Mikrofon-Lebenszyklus, Transkriptions-Schutz
+
+1. **Mikro geht sofort nach der Aufnahme aus** (`useAudioRecording`): Die 60-s-Keepalive des Streams ist entfernt. Sie hielt das macOS-Mikro-Indikator-Licht an und ließ (über die Voice-Processing-Kette) alle anderen Apps leiser spielen. Jede Aufnahme holt jetzt einen frischen Stream und gibt ihn in `onstop`/`cancel` sofort frei.
+2. **Rohaufnahme statt Voice Processing**: `echoCancellation`/`noiseSuppression`/`autoGainControl` sind aus. Sie zwingen CoreAudio in die VoiceProcessingIO-Unit — langsamer Start (Wortverluste) und systemweites Ducking. Whisper will das unverarbeitete Signal ohnehin. `prewarm` nutzt jetzt dieselben Constraints, sonst wärmt es eine Audio-Unit, die nie benutzt wird.
+3. **„Recording" erst wenn wirklich Samples fließen**: `MediaRecorder.onstart` sagt nur, dass der Encoder scharf ist. Ein Analyser pollt jetzt bis zum ersten Sample ≠ 0 (`probeAudioFlow`, Timeout 600 ms, Fallback bei suspendiertem AudioContext); erst dann kippen Pill-Label, Elapsed-Timer und `isRecording`.
+4. **Laufende Transkription ist gegen den Aufnahme-Trigger geschützt**: `startRecording` ignoriert Chord/Button in `starting`/`transcribing`/`refining`. Vorher warf ein zweiter Chord-Druck die Transkription weg und startete neu.
+5. **Escape bricht die Transkription ab**: Neuer, nicht bindbarer Cancel-Chord (`ChordAction::Cancel` auf `Key::Escape`) im `hotkey_monitor` → Event `dictate:cancel`; im Haupt-Tab derselbe Abbruch über einen DOM-Keydown. `cancelCapture` zählt eine Generation hoch, die jede Mutation beim Start snapshottet — spätes Ergebnis pastet nicht mehr und öffnet die Pill nicht wieder. Der Request selbst läuft serverseitig zu Ende, die Capture-Zeile bleibt in der Liste.
+   - Der Cancel-Chord wird nicht registriert, wenn Escape Teil eines Nutzer-Chords ist (Longest-Match wäre sonst mehrdeutig), und wird nie mit einem Recording-Chord zu `RestartRecording` zusammengefasst.
+
+## Session 31.07.2026 (Commits 8013f07..6fbcd86, alle installiert & verifiziert)
 
 1. **Electron-Paste komplett repariert** — drei unabhängige Ursachen (768c473, 8013f07):
    - `focus_capture`: Electron-Apps beantworten die systemweite `AXFocusedUIElement`-Abfrage nicht → Fallback auf Frontmost-App.
