@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePlatform } from '@/platform/PlatformContext';
-import { convertToWav } from '@/lib/utils/audio';
+import { convertRecordingToWav } from '@/lib/utils/audio';
 
 interface UseAudioRecordingOptions {
   maxDurationSeconds?: number;
@@ -224,7 +224,7 @@ export function useAudioRecording({
 
         // Convert to WAV format to avoid needing ffmpeg on backend
         try {
-          const wavBlob = await convertToWav(webmBlob);
+          const wavBlob = await convertRecordingToWav(webmBlob);
           onRecordingComplete?.(wavBlob, recordedDuration);
         } catch (err) {
           console.error('Error converting audio to WAV:', err);
