@@ -48,6 +48,11 @@ use crate::DICTATE_WINDOW_LABEL;
 pub enum ChordAction {
     PushToTalk,
     ToggleToTalk,
+    /// Escape. Not user-bindable and never in [`Bindings`] — registered by
+    /// [`build_matcher`] alongside the user's chords so a transcription can
+    /// be abandoned from any app. keytap's tap is observe-only, so the key
+    /// still reaches whatever the user is working in.
+    Cancel,
 }
 
 /// Effect produced after the chord matcher resolves an event. Hosts
@@ -167,6 +172,12 @@ fn build_matcher(bindings: &Bindings) -> Result<ChordMatcher<ChordAction>, keyta
             );
         }
     }
+    // Skip the cancel chord when the user bound Escape themselves — two
+    // chords over the same key set would make the longest-match resolution
+    // ambiguous, and their dictation chord must win.
+    if !bindings.values().any(|keys| keys.contains(&Key::Escape)) {
+        builder = builder.add(ChordAction::Cancel, Chord::of([Key::Escape]));
+    }
     builder.build()
 }
 
@@ -205,8 +216,13 @@ fn process_event(
             // channel hop between keytap's chord worker and our
             // dispatcher.
             match matcher.recv_timeout(Duration::from_millis(5)) {
+                // Never coalesce across the cancel chord — Escape held while
+                // a dictation chord is released is a Stop plus a Cancel, not
+                // a push-to-talk upgrade.
                 Ok(ChordEvent::Start { id: start_id, time: start_time })
-                    if start_time == end_time =>
+                    if start_time == end_time
+                        && end_id != ChordAction::Cancel
+                        && start_id != ChordAction::Cancel =>
                 {
                     apply_effect(app, Effect::RestartRecording(start_id));
                 }
@@ -232,6 +248,15 @@ fn process_event(
 
 fn apply_effect(app: &AppHandle, effect: Effect) {
     match effect {
+        // The cancel chord has no recording semantics: the press asks the
+        // pill to drop an in-flight transcription, the release means nothing.
+        Effect::StartRecording(ChordAction::Cancel) => {
+            if let Some(window) = app.get_webview_window(DICTATE_WINDOW_LABEL) {
+                let _ = window.emit("dictate:cancel", ());
+            }
+        }
+        Effect::StopRecording(ChordAction::Cancel)
+        | Effect::RestartRecording(ChordAction::Cancel) => {}
         Effect::StartRecording(_) => {
             // Snapshot focus BEFORE we touch the window — any AppKit
             // reshuffle triggered by set_position / show could in principle

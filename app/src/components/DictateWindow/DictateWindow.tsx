@@ -97,6 +97,13 @@ export function DictateWindow() {
         sessionRef.current.stopRecording();
       }),
     );
+    unlistens.push(
+      // Escape, observed globally by the Rust chord matcher. A no-op unless
+      // a capture is currently transcribing or refining.
+      listen('dictate:cancel', () => {
+        sessionRef.current.cancelCapture();
+      }),
+    );
     return () => {
       for (const p of unlistens) p.then((fn) => fn()).catch(() => {});
     };

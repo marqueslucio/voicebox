@@ -171,6 +171,18 @@ export function CapturesTab() {
     onCaptureCreated: (capture) => setSelectedId(capture.id),
   });
 
+  // Escape abandons a capture that's transcribing or refining. The floating
+  // dictate window gets the same key from the Rust chord matcher; this
+  // handler covers the tab, which has real keyboard focus.
+  const cancelCapture = session.cancelCapture;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelCapture();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cancelCapture]);
+
   const { data: capturesData, isLoading: capturesLoading } = useQuery({
     queryKey: ['captures'],
     queryFn: () => apiClient.listCaptures(200, 0),
@@ -590,7 +602,7 @@ export function CapturesTab() {
             {(readiness.canRecord || session.isRecording) && (
               <Button
                 onClick={session.toggleRecording}
-                disabled={session.isUploading && !session.isRecording}
+                disabled={session.isBusy && !session.isRecording}
                 className="relative overflow-hidden transition-all bg-accent text-accent-foreground hover:bg-accent/90"
               >
                 {session.isRecording ? (
