@@ -1,6 +1,6 @@
 # Voicebox — Lokaler Fork: Entwicklungsstand
 
-> Stand: 2026-08-15 | App-Version: **0.5.1** | `main` = e31e166 (**15 Commits vor `origin/main`**), Arbeitsbranch `fix/input-ramp-compensation` | Kein Push/PR ohne explizites Go (siehe AGENTS.md)
+> Stand: 2026-08-18 | App-Version: **0.5.1** | `main` = 7b06f6c (**18 Commits vor `origin/main`**) | Kein Push/PR ohne explizites Go (siehe AGENTS.md)
 
 Diese Datei ist die Übergabeakte für neue Agent-Sessions. Sie beschreibt den lokalen Stand dieses Forks von `jamiepine/voicebox`, nicht das Upstream-Projekt (dafür: `docs/PROJECT_STATUS.md`, Stand 02.07., veraltet).
 
@@ -43,6 +43,14 @@ VOICEBOX_MODELS_DIR="$HOME/.cache/huggingface/hub" backend/venv/bin/python -m ba
   --data-dir <scratch-dir> --port 17999
 ```
 Echte deutsche Test-WAVs liegen unter `~/Library/Application Support/sh.voicebox.app/captures/`.
+
+## Session 18.08.2026 — Transkript bleibt im Clipboard
+
+**Auto-Paste löschte das Transkript, wenn der Paste ins Leere ging** (`paste_final_text` in `main.rs`, `DictateWindow.tsx`). Der Ablauf legt das Transkript aufs Clipboard, sendet Cmd+V und stellt danach den alten Inhalt wieder her. Diese Wiederherstellung lief bisher immer, wenn in der Zwischenzeit niemand sonst ins Clipboard geschrieben hatte — auch dann, wenn der Tastendruck mangels fokussiertem Textfeld nirgends ankam. Das Diktat war damit weder eingefügt noch kopierbar; die einzige Kopie blieb die Capture-Liste (von 652 Captures hatte nur eine gar kein Transkript, der Text selbst ging also nie verloren).
+
+Die Wiederherstellung verlangt jetzt zusätzlich eine AX-Rolle, die einen Paste annimmt (`is_text_input_role`: `AXTextField`, `AXTextArea`, `AXComboBox`, `AXSearchField`). Unbekannte Rolle heißt "wissen wir nicht" — der Chromium/Electron-Pfad fällt auf die Frontmost-App zurück und meldet keine Rolle — und wird zugunsten des Transkripts entschieden. **Folge im Alltag:** In Electron-Zielen (Claude, Slack, ChatGPT) bleibt das Transkript nach dem Einfügen im Clipboard stehen, der vorherige Inhalt kommt dort nicht mehr zurück.
+
+Zweiter stiller Ausstieg in der Pill: ohne Focus-Snapshot brach `onFinalText` ab, ohne das Clipboard je zu beschreiben. Dieser Fall schreibt den Text jetzt heraus.
 
 ## Session 15.08.2026 — Mikrofon-Lebenszyklus, Transkriptions-Schutz
 
