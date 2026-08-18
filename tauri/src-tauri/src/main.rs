@@ -1272,6 +1272,16 @@ fn open_input_monitoring_settings(app: tauri::AppHandle) -> Result<(), String> {
 ///   show for it.
 ///
 /// Returns `true` when the paste sequence completed end-to-end.
+/// AX roles that accept a paste. Anything else — a window, a button, the
+/// desktop — swallows the keystroke, which is what makes the difference
+/// between restoring the old clipboard and keeping the transcript on it.
+fn is_text_input_role(role: &str) -> bool {
+    matches!(
+        role,
+        "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField"
+    )
+}
+
 #[command]
 async fn paste_final_text(
     text: String,
@@ -1296,16 +1306,29 @@ async fn paste_final_text(
     let paste_result = synthetic_keys::send_paste();
     tokio::time::sleep(std::time::Duration::from_millis(PASTE_CONSUME_MS)).await;
 
-    let safe_to_restore = matches!(
+    // Restoring is only safe when the paste had somewhere to land. A chord
+    // fired while no text input had focus posts Cmd+V into a window that
+    // ignores it, and an unconditional restore then wiped the transcript
+    // off the clipboard as well — leaving no way to paste it by hand. An
+    // unknown role means we cannot tell (the Chromium/Electron path falls
+    // back to the frontmost app and reports none), and not knowing is
+    // resolved in favour of keeping the transcript: a clipboard entry the
+    // user did not want costs them nothing, a lost dictation does.
+    let landed_in_text_input = focus.role.as_deref().is_some_and(is_text_input_role);
+    let clipboard_untouched = matches!(
         clipboard::current_change_count(),
         Ok(current) if current == after_write
     );
-    if safe_to_restore {
-        clipboard::restore_clipboard(&snapshot)?;
-    } else {
+    if !clipboard_untouched {
         eprintln!(
             "[voicebox] clipboard mutated during paste window — skipping restore to preserve newer content"
         );
+    } else if !landed_in_text_input {
+        eprintln!(
+            "[voicebox] paste target was not a known text input — leaving the transcript on the clipboard"
+        );
+    } else {
+        clipboard::restore_clipboard(&snapshot)?;
     }
 
     paste_result?;

@@ -49,7 +49,16 @@ export function DictateWindow() {
       // refine-result firing a paste after the user has moved on.
       focusRef.current = null;
       if (!allowAutoPaste) return;
-      if (!focus || !text.trim()) return;
+      if (!text.trim()) return;
+      if (!focus) {
+        // No focus snapshot means the paste has nothing to aim at. Put the
+        // text on the clipboard anyway rather than returning silently —
+        // otherwise the dictation is only reachable from the captures list.
+        await navigator.clipboard.writeText(text).catch((err) => {
+          console.warn('[dictate] clipboard fallback failed:', err);
+        });
+        return;
+      }
       try {
         await invoke('paste_final_text', { text, focus });
       } catch (err) {
