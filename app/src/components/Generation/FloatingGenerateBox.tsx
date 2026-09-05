@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMatchRoute } from '@tanstack/react-router';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Dices, Loader2, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
@@ -17,9 +17,10 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/use-toast';
 import { apiClient } from '@/lib/api/client';
 import { getLanguageOptionsForEngine, type LanguageCode } from '@/lib/constants/languages';
-import { useGenerationForm } from '@/lib/hooks/useGenerationForm';
+import { type GenerationFormValues, useGenerationForm } from '@/lib/hooks/useGenerationForm';
 import { useProfile, useProfiles } from '@/lib/hooks/useProfiles';
 import { useStory } from '@/lib/hooks/useStories';
+import { normalizeStoryDelivery } from '@/lib/story';
 import { cn } from '@/lib/utils/cn';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useStoryStore } from '@/stores/storyStore';
@@ -48,10 +49,17 @@ export function FloatingGenerateBox({
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const matchRoute = useMatchRoute();
-  const isStoriesRoute = matchRoute({ to: '/stories' });
+  const isStoriesRoute = !!matchRoute({ to: '/stories' });
   const selectedStoryId = useStoryStore((state) => state.selectedStoryId);
   const trackEditorHeight = useStoryStore((state) => state.trackEditorHeight);
   const { data: currentStory } = useStory(selectedStoryId);
+  const activeStoryDelivery = useMemo(
+    () =>
+      isStoriesRoute && currentStory?.delivery_settings?.enabled
+        ? normalizeStoryDelivery(currentStory.delivery_settings)
+        : null,
+    [isStoriesRoute, currentStory?.delivery_settings],
+  );
   const addPendingStoryAdd = useGenerationStore((s) => s.addPendingStoryAdd);
   const { toast } = useToast();
 
@@ -97,6 +105,13 @@ export function FloatingGenerateBox({
       return preset?.effects_chain;
     },
   });
+  const manualDeliveryRef = useRef<{
+    profileId: string | null;
+    engine: GenerationFormValues['engine'];
+    modelSize: GenerationFormValues['modelSize'];
+    language: GenerationFormValues['language'];
+    seed: GenerationFormValues['seed'];
+  } | null>(null);
 
   // Click away handler to collapse the box
   useEffect(() => {
@@ -153,14 +168,14 @@ export function FloatingGenerateBox({
     | 'kokoro'
     | 'qwen_custom_voice';
   useEffect(() => {
-    if (selectedProfile?.language) {
+    if (!activeStoryDelivery && selectedProfile?.language) {
       form.setValue('language', selectedProfile.language as LanguageCode);
     }
     // Auto-switch engine to match the profile
     const engine = selectedProfile?.default_engine ?? selectedProfile?.preset_engine;
-    if (engine) {
+    if (!activeStoryDelivery && engine) {
       form.setValue('engine', engine as EngineValue);
-    } else if (selectedProfile && selectedProfile.voice_type !== 'preset') {
+    } else if (!activeStoryDelivery && selectedProfile && selectedProfile.voice_type !== 'preset') {
       // Cloned/designed profile with no default — ensure a compatible (non-preset) engine
       const currentEngine = form.getValues('engine');
       const presetEngines = new Set(['kokoro', 'qwen_custom_voice']);
@@ -195,7 +210,40 @@ export function FloatingGenerateBox({
     if (selectedProfile && !selectedProfile.personality?.trim()) {
       form.setValue('personality', false);
     }
-  }, [selectedProfile, effectPresets, form]);
+  }, [selectedProfile, effectPresets, form, activeStoryDelivery]);
+
+  // The server owns story-wide delivery. Mirror its saved values without
+  // resetting the text field so a profile save cannot erase in-progress copy.
+  useEffect(() => {
+    if (!activeStoryDelivery) {
+      const manual = manualDeliveryRef.current;
+      if (manual) {
+        setSelectedProfileId(manual.profileId);
+        form.setValue('engine', manual.engine);
+        form.setValue('modelSize', manual.modelSize);
+        form.setValue('language', manual.language);
+        form.setValue('seed', manual.seed);
+        manualDeliveryRef.current = null;
+      }
+      return;
+    }
+    if (!manualDeliveryRef.current) {
+      manualDeliveryRef.current = {
+        profileId: selectedProfileId,
+        engine: form.getValues('engine'),
+        modelSize: form.getValues('modelSize'),
+        language: form.getValues('language'),
+        seed: form.getValues('seed'),
+      };
+    }
+    if (activeStoryDelivery.profile_id) {
+      setSelectedProfileId(activeStoryDelivery.profile_id);
+    }
+    form.setValue('engine', activeStoryDelivery.engine);
+    form.setValue('modelSize', activeStoryDelivery.model_size);
+    form.setValue('language', activeStoryDelivery.language);
+    form.setValue('seed', activeStoryDelivery.seed ?? undefined);
+  }, [activeStoryDelivery, form, selectedProfileId, setSelectedProfileId]);
 
   // Auto-resize textarea based on content (only when expanded)
   useEffect(() => {
@@ -248,7 +296,11 @@ export function FloatingGenerateBox({
   }, [isExpanded]);
 
   async function onSubmit(data: Parameters<typeof handleSubmit>[0]) {
-    await handleSubmit(data, selectedProfileId);
+    await handleSubmit(
+      data,
+      selectedProfileId,
+      isStoriesRoute && selectedStoryId ? selectedStoryId : undefined,
+    );
   }
 
   return (
@@ -418,13 +470,19 @@ export function FloatingGenerateBox({
                                         ? 'bg-accent text-accent-foreground border border-accent hover:bg-accent/90'
                                         : 'bg-card border border-border hover:bg-background/50',
                                     )}
-                                    aria-label={active ? t('generation.persona.ariaLabelActive') : t('generation.persona.ariaLabelInactive')}
+                                    aria-label={
+                                      active
+                                        ? t('generation.persona.ariaLabelActive')
+                                        : t('generation.persona.ariaLabelInactive')
+                                    }
                                     aria-pressed={active}
                                   >
                                     <Wand2 className="h-4 w-4" />
                                   </Button>
                                   <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded-md bg-popover px-3 py-1.5 text-xs text-popover-foreground border border-border opacity-0 transition-opacity group-hover:opacity-100 z-[9999]">
-                                    {active ? t('generation.persona.tooltipActive') : t('generation.persona.tooltipInactive')}
+                                    {active
+                                      ? t('generation.persona.tooltipActive')
+                                      : t('generation.persona.tooltipInactive')}
                                   </span>
                                 </div>
                               </FormControl>
@@ -551,6 +609,7 @@ export function FloatingGenerateBox({
                       <Select
                         value={selectedProfileId || ''}
                         onValueChange={(value) => setSelectedProfileId(value || null)}
+                        disabled={!!activeStoryDelivery}
                       >
                         <SelectTrigger className="h-8 text-xs bg-card border-border rounded-full hover:bg-background/50 transition-all w-full">
                           <SelectValue placeholder={t('generation.voiceSelector.placeholder')} />
@@ -566,7 +625,6 @@ export function FloatingGenerateBox({
                     </div>
                   )}
 
-
                   <FormField
                     control={form.control}
                     name="language"
@@ -576,7 +634,11 @@ export function FloatingGenerateBox({
                       );
                       return (
                         <FormItem className="flex-1 space-y-0">
-                          <Select onValueChange={field.onChange} value={field.value}>
+                          <Select
+                            onValueChange={field.onChange}
+                            value={field.value}
+                            disabled={!!activeStoryDelivery}
+                          >
                             <FormControl>
                               <SelectTrigger className="h-8 text-xs bg-card border-border rounded-full hover:bg-background/50 transition-all">
                                 <SelectValue />
@@ -597,7 +659,7 @@ export function FloatingGenerateBox({
                   />
 
                   <FormItem className="flex-1 space-y-0">
-                    <EngineModelSelector form={form} compact />
+                    <EngineModelSelector form={form} compact disabled={!!activeStoryDelivery} />
                   </FormItem>
 
                   <FormItem className="flex-1 space-y-0">
@@ -629,6 +691,11 @@ export function FloatingGenerateBox({
                     </Select>
                   </FormItem>
                 </div>
+                {activeStoryDelivery && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t('storyContent.voice.enabledHint')}
+                  </p>
+                )}
               </motion.div>
             </AnimatePresence>
           </form>

@@ -16,7 +16,7 @@ import type { GenerationFormValues } from '@/lib/hooks/useGenerationForm';
  * Engine/model options and their display metadata.
  * Adding a new engine means adding one entry here.
  */
-const ENGINE_OPTIONS = [
+export const ENGINE_OPTIONS = [
   { value: 'qwen:1.7B', label: 'Qwen3-TTS 1.7B', engine: 'qwen' },
   { value: 'qwen:0.6B', label: 'Qwen3-TTS 0.6B', engine: 'qwen' },
   { value: 'qwen_custom_voice:1.7B', label: 'Qwen CustomVoice 1.7B', engine: 'qwen_custom_voice' },
@@ -50,7 +50,7 @@ function getAvailableOptions(selectedProfile?: VoiceProfileResponse | null) {
   return ENGINE_OPTIONS.filter((opt) => isProfileCompatibleWithEngine(selectedProfile, opt.engine));
 }
 
-function getSelectValue(engine: string, modelSize?: string): string {
+export function getEngineModelSelectValue(engine: string, modelSize?: string): string {
   if (engine === 'qwen') return `qwen:${modelSize || '1.7B'}`;
   if (engine === 'qwen_custom_voice') return `qwen_custom_voice:${modelSize || '1.7B'}`;
   if (engine === 'tada') return `tada:${modelSize || '1B'}`;
@@ -111,12 +111,18 @@ interface EngineModelSelectorProps {
   form: UseFormReturn<GenerationFormValues>;
   compact?: boolean;
   selectedProfile?: VoiceProfileResponse | null;
+  disabled?: boolean;
 }
 
-export function EngineModelSelector({ form, compact, selectedProfile }: EngineModelSelectorProps) {
+export function EngineModelSelector({
+  form,
+  compact,
+  selectedProfile,
+  disabled,
+}: EngineModelSelectorProps) {
   const engine = form.watch('engine') || 'qwen';
   const modelSize = form.watch('modelSize');
-  const selectValue = getSelectValue(engine, modelSize);
+  const selectValue = getEngineModelSelectValue(engine, modelSize);
   const availableOptions = getAvailableOptions(selectedProfile);
 
   const currentEngineAvailable = availableOptions.some((opt) => opt.value === selectValue);
@@ -133,7 +139,11 @@ export function EngineModelSelector({ form, compact, selectedProfile }: EngineMo
     : undefined;
 
   return (
-    <Select value={selectValue} onValueChange={(v) => applyEngineSelection(form, v)}>
+    <Select
+      value={selectValue}
+      onValueChange={(v) => applyEngineSelection(form, v)}
+      disabled={disabled}
+    >
       <FormControl>
         <SelectTrigger className={triggerClass}>
           <SelectValue />

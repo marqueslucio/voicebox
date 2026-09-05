@@ -83,6 +83,7 @@ export function useGenerationProgress() {
 
             // Refetch history to pick up the completed generation
             queryClient.refetchQueries({ queryKey: ['history'] });
+            queryClient.invalidateQueries({ queryKey: ['stories'] });
 
             // If this generation was queued for a story, add it now
             const storyId = removePendingStoryAdd(id);
@@ -120,8 +121,25 @@ export function useGenerationProgress() {
             // plays those itself.
             const isAgentSpeak = data.source ? AGENT_SOURCES.has(data.source) : false;
             if (autoplayRef.current && !isPlayingRef.current && !isAgentSpeak) {
-              const genAudioUrl = apiClient.getAudioUrl(id);
-              setAudioWithAutoPlay(genAudioUrl, id, '', '');
+              void apiClient
+                .getGeneration(id)
+                .then((generation) => {
+                  if (!autoplayRef.current || isPlayingRef.current) return;
+                  const genAudioUrl = generation.active_version_id
+                    ? apiClient.getVersionAudioUrl(generation.active_version_id)
+                    : apiClient.getAudioUrl(id);
+                  setAudioWithAutoPlay(
+                    genAudioUrl,
+                    id,
+                    generation.profile_id,
+                    generation.text.substring(0, 50),
+                  );
+                })
+                .catch(() => {
+                  if (autoplayRef.current && !isPlayingRef.current) {
+                    setAudioWithAutoPlay(apiClient.getAudioUrl(id), id, '', '');
+                  }
+                });
             }
           } else if (data.status === 'failed' || data.status === 'not_found') {
             source.close();
@@ -149,6 +167,7 @@ export function useGenerationProgress() {
         currentSources.delete(id);
         removePendingGeneration(id);
         queryClient.refetchQueries({ queryKey: ['history'] });
+        queryClient.invalidateQueries({ queryKey: ['stories'] });
       };
 
       currentSources.set(id, source);

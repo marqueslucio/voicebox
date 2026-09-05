@@ -51,7 +51,10 @@ async def update_story(
     db: Session = Depends(get_db),
 ):
     """Update a story."""
-    story = await stories.update_story(story_id, data, db)
+    try:
+        story = await stories.update_story(story_id, data, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not story:
         raise HTTPException(status_code=404, detail="Story not found")
     return story
@@ -115,10 +118,15 @@ async def reorder_story_items(
     db: Session = Depends(get_db),
 ):
     """Reorder story items and recalculate timecodes."""
-    items = await stories.reorder_story_items(story_id, data.generation_ids, db)
+    items = await stories.reorder_story_items(
+        story_id,
+        data.item_ids,
+        db,
+        generation_ids=data.generation_ids,
+    )
     if items is None:
         raise HTTPException(
-            status_code=400, detail="Invalid reorder request - ensure all generation IDs belong to this story"
+            status_code=400, detail="Invalid reorder request - provide every story item ID exactly once"
         )
     return items
 

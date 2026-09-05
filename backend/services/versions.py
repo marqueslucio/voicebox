@@ -33,6 +33,7 @@ def _version_response(v: DBGenerationVersion) -> GenerationVersionResponse:
         generation_id=v.generation_id,
         label=v.label,
         audio_path=v.audio_path,
+        duration=v.duration,
         effects_chain=effects_chain,
         source_version_id=v.source_version_id,
         is_default=v.is_default,
@@ -87,6 +88,7 @@ def create_version(
     effects_chain: Optional[List[dict]] = None,
     is_default: bool = False,
     source_version_id: Optional[str] = None,
+    duration: Optional[float] = None,
 ) -> GenerationVersionResponse:
     """Create a new version for a generation.
 
@@ -101,6 +103,7 @@ def create_version(
         generation_id=generation_id,
         label=label,
         audio_path=audio_path,
+        duration=duration,
         effects_chain=json.dumps(effects_chain) if effects_chain else None,
         source_version_id=source_version_id,
         is_default=is_default,
@@ -114,6 +117,8 @@ def create_version(
         gen = db.query(DBGeneration).filter_by(id=generation_id).first()
         if gen:
             gen.audio_path = audio_path
+            if version.duration is not None:
+                gen.duration = version.duration
             db.commit()
 
     return _version_response(version)
@@ -134,6 +139,8 @@ def set_default_version(version_id: str, db: Session) -> Optional[GenerationVers
     gen = db.query(DBGeneration).filter_by(id=version.generation_id).first()
     if gen:
         gen.audio_path = version.audio_path
+        if version.duration is not None:
+            gen.duration = version.duration
         db.commit()
 
     return _version_response(version)
@@ -179,6 +186,8 @@ def delete_version(version_id: str, db: Session) -> bool:
             gen = db.query(DBGeneration).filter_by(id=gen_id).first()
             if gen:
                 gen.audio_path = first.audio_path
+                if first.duration is not None:
+                    gen.duration = first.duration
                 db.commit()
 
     return True

@@ -11,7 +11,13 @@ from sqlalchemy.orm import Session
 
 from .. import config, models
 from ..services import history, personality, profiles, tts
-from ..database import Generation as DBGeneration, VoiceProfile as DBVoiceProfile, get_db
+from ..database import (
+    Generation as DBGeneration,
+    Story as DBStory,
+    StoryItem as DBStoryItem,
+    VoiceProfile as DBVoiceProfile,
+    get_db,
+)
 from ..services.generation import run_generation
 from ..services.task_queue import cancel_generation as cancel_generation_job, enqueue_generation
 from ..utils.audio import load_audio
@@ -53,6 +59,62 @@ def _resolve_generation_engine(data: models.GenerationRequest, profile) -> str:
     return data.engine or getattr(profile, "default_engine", None) or getattr(profile, "preset_engine", None) or "qwen"
 
 
+def _parse_delivery_settings(raw) -> models.DeliverySettings | None:
+    if not raw:
+        return None
+    try:
+        settings = models.DeliverySettings.model_validate(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid saved delivery settings: {exc}") from exc
+    return settings if settings.enabled else None
+
+
+def _delivery_instruction(settings: models.DeliverySettings) -> str | None:
+    if settings.engine != "qwen_custom_voice":
+        return None
+
+    return "Use energy {}/100, warmth {}/100, and expressive variation {}/100.".format(
+        round(settings.energy * 100),
+        round(settings.warmth * 100),
+        round(settings.expression * 100),
+    )
+
+
+async def _resolve_request_context(data: models.GenerationRequest, db: Session) -> dict:
+    settings = None
+    if data.story_id:
+        story = db.query(DBStory).filter_by(id=data.story_id).first()
+        if not story:
+            raise HTTPException(status_code=404, detail="Story not found")
+        settings = _parse_delivery_settings(story.delivery_settings)
+
+    profile_id = settings.profile_id if settings else data.profile_id
+    profile = await profiles.get_profile(profile_id, db)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    engine = settings.engine if settings else _resolve_generation_engine(data, profile)
+    try:
+        profiles.validate_profile_engine(profile, engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from ..backends import engine_has_model_sizes
+
+    requested_model = settings.model_size if settings else data.model_size or "1.7B"
+    return {
+        "profile": profile,
+        "profile_id": profile_id,
+        "engine": engine,
+        "model_size": requested_model if engine_has_model_sizes(engine) else None,
+        "language": settings.language if settings else data.language,
+        "seed": settings.seed if settings else data.seed,
+        "instruct": _delivery_instruction(settings) if settings else data.instruct,
+        "speed": settings.speed if settings else 1.0,
+        "snapshot": settings.model_dump() if settings else None,
+    }
+
+
 @router.post("/generate", response_model=models.GenerationResponse)
 async def generate_speech(
     data: models.GenerationRequest,
@@ -62,19 +124,8 @@ async def generate_speech(
     task_manager = get_task_manager()
     generation_id = str(uuid.uuid4())
 
-    profile = await profiles.get_profile(data.profile_id, db)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    from ..backends import engine_has_model_sizes
-
-    engine = _resolve_generation_engine(data, profile)
-    try:
-        profiles.validate_profile_engine(profile, engine)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    model_size = (data.model_size or "1.7B") if engine_has_model_sizes(engine) else None
+    context = await _resolve_request_context(data, db)
+    profile = context["profile"]
 
     text = data.text
     source = "manual"
@@ -89,24 +140,25 @@ async def generate_speech(
         source = "personality_speak"
 
     generation = await history.create_generation(
-        profile_id=data.profile_id,
+        profile_id=context["profile_id"],
         text=text,
-        language=data.language,
+        language=context["language"],
         audio_path="",
         duration=0,
-        seed=data.seed,
+        seed=context["seed"],
         db=db,
-        instruct=data.instruct,
+        instruct=context["instruct"],
         generation_id=generation_id,
         status="generating",
-        engine=engine,
-        model_size=model_size if engine_has_model_sizes(engine) else None,
+        engine=context["engine"],
+        model_size=context["model_size"],
         source=source,
+        delivery_settings=context["snapshot"],
     )
 
     task_manager.start_generation(
         task_id=generation_id,
-        profile_id=data.profile_id,
+        profile_id=context["profile_id"],
         text=text,
     )
 
@@ -116,7 +168,7 @@ async def generate_speech(
     else:
         import json as _json
 
-        profile_obj = db.query(DBVoiceProfile).filter_by(id=data.profile_id).first()
+        profile_obj = db.query(DBVoiceProfile).filter_by(id=context["profile_id"]).first()
         if profile_obj and profile_obj.effects_chain:
             try:
                 effects_chain_config = _json.loads(profile_obj.effects_chain)
@@ -127,18 +179,19 @@ async def generate_speech(
         generation_id,
         run_generation(
             generation_id=generation_id,
-            profile_id=data.profile_id,
+            profile_id=context["profile_id"],
             text=text,
-            language=data.language,
-            engine=engine,
-            model_size=model_size,
-            seed=data.seed,
+            language=context["language"],
+            engine=context["engine"],
+            model_size=context["model_size"],
+            seed=context["seed"],
             normalize=data.normalize,
             effects_chain=effects_chain_config,
-            instruct=data.instruct,
+            instruct=context["instruct"],
             mode="generate",
             max_chunk_chars=data.max_chunk_chars,
             crossfade_ms=data.crossfade_ms,
+            speed=context["speed"],
         )
     )
 
@@ -154,6 +207,18 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
 
     if (gen.status or "completed") != "failed":
         raise HTTPException(status_code=400, detail="Only failed generations can be retried")
+
+    settings = _parse_delivery_settings(gen.delivery_settings)
+    if settings:
+        if settings.profile_id != gen.profile_id:
+            raise HTTPException(status_code=400, detail="Saved delivery profile does not match generation voice")
+        profile = db.query(DBVoiceProfile).filter_by(id=gen.profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        try:
+            profiles.validate_profile_engine(profile, settings.engine)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     gen.status = "generating"
     gen.error = None
@@ -175,12 +240,13 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
             generation_id=generation_id,
             profile_id=gen.profile_id,
             text=gen.text,
-            language=gen.language,
-            engine=gen.engine or "qwen",
-            model_size=gen.model_size or "1.7B",
-            seed=gen.seed,
-            instruct=gen.instruct,
+            language=settings.language if settings else gen.language,
+            engine=settings.engine if settings else gen.engine or "qwen",
+            model_size=settings.model_size if settings else gen.model_size or "1.7B",
+            seed=settings.seed if settings else gen.seed,
+            instruct=_delivery_instruction(settings) if settings else gen.instruct,
             mode="retry",
+            speed=settings.speed if settings else 1.0,
         )
     )
 
@@ -191,13 +257,55 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
     "/generate/{generation_id}/regenerate",
     response_model=models.GenerationResponse,
 )
-async def regenerate_generation(generation_id: str, db: Session = Depends(get_db)):
+async def regenerate_generation(
+    generation_id: str,
+    data: models.RegenerateRequest | None = None,
+    db: Session = Depends(get_db),
+):
     """Re-run TTS with the same parameters and save the result as a new version."""
     gen = db.query(DBGeneration).filter_by(id=generation_id).first()
     if not gen:
         raise HTTPException(status_code=404, detail="Generation not found")
     if (gen.status or "completed") != "completed":
         raise HTTPException(status_code=400, detail="Generation must be completed to regenerate")
+
+    settings = None
+    if data and data.story_id:
+        story = db.query(DBStory).filter_by(id=data.story_id).first()
+        if not story:
+            raise HTTPException(status_code=404, detail="Story not found")
+        if not db.query(DBStoryItem).filter_by(
+            story_id=story.id,
+            generation_id=gen.id,
+        ).first():
+            raise HTTPException(status_code=400, detail="Generation does not belong to this story")
+        settings = _parse_delivery_settings(story.delivery_settings)
+    elif gen.delivery_settings:
+        settings = _parse_delivery_settings(gen.delivery_settings)
+
+    if settings:
+        if settings.profile_id != gen.profile_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Story delivery profile differs from this generation; create a new clip to preserve voice identity",
+            )
+        if settings.engine != (gen.engine or "qwen"):
+            raise HTTPException(
+                status_code=400,
+                detail="Story delivery engine differs from this generation; create a new clip to preserve voice identity",
+            )
+        profile = db.query(DBVoiceProfile).filter_by(id=gen.profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        try:
+            profiles.validate_profile_engine(profile, settings.engine)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        gen.language = settings.language
+        gen.model_size = settings.model_size
+        gen.seed = settings.seed
+        gen.instruct = _delivery_instruction(settings)
+        gen.delivery_settings = settings.model_dump()
 
     gen.status = "generating"
     gen.error = None
@@ -219,13 +327,14 @@ async def regenerate_generation(generation_id: str, db: Session = Depends(get_db
             generation_id=generation_id,
             profile_id=gen.profile_id,
             text=gen.text,
-            language=gen.language,
-            engine=gen.engine or "qwen",
-            model_size=gen.model_size or "1.7B",
-            seed=gen.seed,
-            instruct=gen.instruct,
+            language=settings.language if settings else gen.language,
+            engine=settings.engine if settings else gen.engine or "qwen",
+            model_size=settings.model_size if settings else gen.model_size or "1.7B",
+            seed=settings.seed if settings else None,
+            instruct=_delivery_instruction(settings) if settings else gen.instruct,
             mode="regenerate",
             version_id=version_id,
+            speed=settings.speed if settings else 1.0,
         )
     )
 
@@ -329,23 +438,17 @@ async def stream_speech(
         load_engine_model,
     )
 
-    profile = await profiles.get_profile(data.profile_id, db)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    engine = _resolve_generation_engine(data, profile)
-    try:
-        profiles.validate_profile_engine(profile, engine)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    context = await _resolve_request_context(data, db)
+    profile = context["profile"]
+    engine = context["engine"]
     tts_model = get_tts_backend_for_engine(engine)
-    model_size = data.model_size or "1.7B"
+    model_size = context["model_size"] or data.model_size or "1.7B"
 
     await ensure_model_cached_or_raise(engine, model_size)
     await load_engine_model(engine, model_size)
 
     voice_prompt = await profiles.create_voice_prompt_for_profile(
-        data.profile_id,
+        context["profile_id"],
         db,
         engine=engine,
     )
@@ -367,14 +470,18 @@ async def stream_speech(
         tts_model,
         data.text,
         voice_prompt,
-        language=data.language,
-        seed=data.seed,
-        instruct=data.instruct,
+        language=context["language"],
+        seed=context["seed"],
+        instruct=context["instruct"],
         max_chunk_chars=data.max_chunk_chars,
         crossfade_ms=data.crossfade_ms,
         trim_fn=trim_fn,
         runaway_detector=runaway_detector,
     )
+
+    from ..utils.audio import time_stretch_audio
+
+    audio = time_stretch_audio(audio, context["speed"])
 
     effects_chain_config = None
     if data.effects_chain is not None:
@@ -468,7 +575,7 @@ async def import_audio(
     profile = _get_or_create_import_profile(db)
     display_name = Path(file.filename or "Imported audio").stem or "Imported audio"
 
-    return await history.create_generation(
+    generation = await history.create_generation(
         profile_id=profile.id,
         text=display_name,
         language="en",
@@ -482,3 +589,16 @@ async def import_audio(
         model_size=None,
         source="import",
     )
+    from ..services import versions as versions_mod
+
+    version = versions_mod.create_version(
+        generation_id=generation_id,
+        label="original",
+        audio_path=config.to_storage_path(target),
+        db=db,
+        is_default=True,
+        duration=duration,
+    )
+    generation.versions = [version]
+    generation.active_version_id = version.id
+    return generation

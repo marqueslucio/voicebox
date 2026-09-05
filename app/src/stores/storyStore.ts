@@ -57,7 +57,9 @@ export const useStoryStore = create<StoryPlaybackState>((set, get) => ({
   play: (storyId, items) => {
     // Calculate total duration from items
     const maxEndTimeMs = Math.max(
-      ...items.map((item) => item.start_time_ms + item.duration * 1000),
+      ...items.map(
+        (item) => item.start_time_ms + item.duration * 1000 - item.trim_start_ms - item.trim_end_ms,
+      ),
       0,
     );
 
@@ -73,7 +75,7 @@ export const useStoryStore = create<StoryPlaybackState>((set, get) => ({
       storyId,
       itemCount: items.length,
       items: items.map((i) => ({
-        id: i.generation_id,
+        id: i.id,
         start: i.start_time_ms,
         duration: i.duration,
       })),
@@ -134,15 +136,13 @@ export const useStoryStore = create<StoryPlaybackState>((set, get) => ({
 
   setActiveStory: (storyId, items, totalDurationMs) => {
     const currentState = get();
-    // Only update if switching to a different story
-    if (currentState.playbackStoryId !== storyId) {
-      set({
-        playbackStoryId: storyId,
-        playbackItems: items,
-        totalDurationMs,
-        currentTimeMs: 0,
-        isPlaying: false,
-      });
-    }
+    const switchingStory = currentState.playbackStoryId !== storyId;
+    set({
+      playbackStoryId: storyId,
+      playbackItems: items,
+      totalDurationMs,
+      currentTimeMs: switchingStory ? 0 : Math.min(currentState.currentTimeMs, totalDurationMs),
+      isPlaying: switchingStory ? false : currentState.isPlaying,
+    });
   },
 }));

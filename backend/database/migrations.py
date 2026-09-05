@@ -38,6 +38,7 @@ def run_migrations(engine) -> None:
 
     _migrate_story_items(engine, inspector, tables)
     _migrate_profiles(engine, inspector, tables)
+    _migrate_stories(engine, inspector, tables)
     _migrate_generations(engine, inspector, tables)
     _migrate_effect_presets(engine, inspector, tables)
     _migrate_generation_versions(engine, inspector, tables)
@@ -184,6 +185,15 @@ def _migrate_generations(engine, inspector, tables: set[str]) -> None:
             "source VARCHAR NOT NULL DEFAULT 'manual'",
             "source",
         )
+    if "delivery_settings" not in columns:
+        _add_column(engine, "generations", "delivery_settings JSON", "delivery_settings")
+
+
+def _migrate_stories(engine, inspector, tables: set[str]) -> None:
+    if "stories" not in tables:
+        return
+    if "delivery_settings" not in _get_columns(inspector, "stories"):
+        _add_column(engine, "stories", "delivery_settings JSON", "delivery_settings")
 
 
 def _migrate_effect_presets(engine, inspector, tables: set[str]) -> None:
@@ -200,6 +210,8 @@ def _migrate_generation_versions(engine, inspector, tables: set[str]) -> None:
     columns = _get_columns(inspector, "generation_versions")
     if "source_version_id" not in columns:
         _add_column(engine, "generation_versions", "source_version_id VARCHAR", "source_version_id")
+    if "duration" not in columns:
+        _add_column(engine, "generation_versions", "duration FLOAT", "duration")
 
 
 def _migrate_capture_settings(engine, inspector, tables: set[str]) -> None:

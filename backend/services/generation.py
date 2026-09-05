@@ -42,6 +42,7 @@ async def run_generation(
     max_chunk_chars: Optional[int] = None,
     crossfade_ms: Optional[int] = None,
     version_id: Optional[str] = None,
+    speed: float = 1.0,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -55,7 +56,7 @@ async def run_generation(
         load_engine_model,
     )
     from ..utils.chunked_tts import generate_chunked
-    from ..utils.audio import has_tts_runaway, normalize_audio, save_audio, trim_tts_output
+    from ..utils.audio import has_tts_runaway, normalize_audio, save_audio, time_stretch_audio, trim_tts_output
 
     task_manager = get_task_manager()
     bg_db = next(get_db())
@@ -81,7 +82,7 @@ async def run_generation(
 
         gen_kwargs: dict = dict(
             language=language,
-            seed=seed if mode != "regenerate" else None,
+            seed=seed,
             instruct=instruct,
             trim_fn=trim_fn,
             runaway_detector=runaway_detector,
@@ -92,6 +93,10 @@ async def run_generation(
             gen_kwargs["crossfade_ms"] = crossfade_ms
 
         audio, sample_rate = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
+
+        if sample_rate <= 0:
+            raise ValueError("Generated audio has an invalid sample rate")
+        audio = time_stretch_audio(audio, speed)
 
         # --- Normalize (generate and regenerate always; retry skips) -----
         if normalize or mode == "regenerate":
@@ -108,6 +113,7 @@ async def run_generation(
                 effects_chain=effects_chain,
                 save_audio=save_audio,
                 db=bg_db,
+                duration=duration,
             )
         elif mode == "retry":
             final_path = _save_retry(
@@ -124,6 +130,7 @@ async def run_generation(
                 sample_rate=sample_rate,
                 save_audio=save_audio,
                 db=bg_db,
+                duration=duration,
             )
 
         await history.update_generation_status(
@@ -180,6 +187,7 @@ def _save_generate(
     effects_chain: Optional[list],
     save_audio,
     db,
+    duration: float,
 ) -> str:
     """Save clean version and optionally an effects-processed version.
 
@@ -200,6 +208,7 @@ def _save_generate(
         db=db,
         effects_chain=None,
         is_default=not has_effects,
+        duration=duration,
     )
 
     final_audio_path = str(clean_audio_path)
@@ -228,6 +237,7 @@ def _save_generate(
                 db=db,
                 effects_chain=effects_chain,
                 is_default=True,
+                duration=len(processed_audio) / sample_rate,
             )
 
     return config.to_storage_path(final_audio_path)
@@ -331,6 +341,7 @@ def _save_regenerate(
     sample_rate: int,
     save_audio,
     db,
+    duration: float,
 ) -> str:
     """Save regeneration output as a new version with auto-label.
 
@@ -357,6 +368,7 @@ def _save_regenerate(
         db=db,
         effects_chain=None,
         is_default=True,
+        duration=duration,
     )
 
     return config.to_storage_path(audio_path)

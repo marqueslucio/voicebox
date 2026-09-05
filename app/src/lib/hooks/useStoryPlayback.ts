@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { apiClient } from '@/lib/api/client';
 import type { StoryItemDetail } from '@/lib/api/types';
+import { resolveAudioVersionId } from '@/lib/story';
 import { useStoryStore } from '@/stores/storyStore';
 
 interface ActiveSource {
@@ -8,8 +9,21 @@ interface ActiveSource {
   clipGain: GainNode;
   itemId: string;
   generationId: string;
+  audioKey: string;
   startTimeMs: number;
   endTimeMs: number;
+}
+
+function getAudioKey(item: StoryItemDetail) {
+  const versionId = resolveAudioVersionId(item);
+  return versionId ? `v:${versionId}` : item.generation_id;
+}
+
+function getAudioUrlForItem(item: StoryItemDetail) {
+  const versionId = resolveAudioVersionId(item);
+  return versionId
+    ? apiClient.getVersionAudioUrl(versionId)
+    : apiClient.getAudioUrl(item.generation_id);
 }
 
 /**
@@ -88,16 +102,6 @@ export function useStoryPlayback(items: StoryItemDetail[] | undefined) {
       activeSourcesRef.current.delete(itemId);
     }
   }, []);
-
-  // Resolve the audio buffer key and URL for an item.
-  // When a version_id is pinned, use that version's audio; otherwise use the generation default.
-  const getAudioKey = (item: StoryItemDetail) =>
-    item.version_id ? `v:${item.version_id}` : item.generation_id;
-
-  const getAudioUrlForItem = (item: StoryItemDetail) =>
-    item.version_id
-      ? apiClient.getVersionAudioUrl(item.version_id)
-      : apiClient.getAudioUrl(item.generation_id);
 
   // Preload audio files as AudioBuffers
   useEffect(() => {
@@ -245,8 +249,12 @@ export function useStoryPlayback(items: StoryItemDetail[] | undefined) {
 
       // Schedule new sources for items that should be playing
       for (const item of shouldBePlaying) {
+        const bufferKey = getAudioKey(item);
+        const existingSource = activeSourcesRef.current.get(item.id);
+        if (existingSource && existingSource.audioKey !== bufferKey) {
+          stopSource(item.id);
+        }
         if (!activeSourcesRef.current.has(item.id)) {
-          const bufferKey = getAudioKey(item);
           const buffer = audioBuffersRef.current.get(bufferKey);
           if (!buffer) {
             console.warn('[StoryPlayback] Buffer not loaded for:', bufferKey);
@@ -274,6 +282,7 @@ export function useStoryPlayback(items: StoryItemDetail[] | undefined) {
           console.log('[StoryPlayback] Scheduling source:', {
             itemId: item.id,
             generationId: item.generation_id,
+            audioKey: bufferKey,
             storyTimeMs,
             itemStart: item.start_time_ms,
             offsetIntoBuffer,
@@ -296,6 +305,7 @@ export function useStoryPlayback(items: StoryItemDetail[] | undefined) {
             clipGain,
             itemId: item.id,
             generationId: item.generation_id,
+            audioKey: bufferKey,
             startTimeMs: item.start_time_ms,
             endTimeMs: itemEndStoryTime,
           };

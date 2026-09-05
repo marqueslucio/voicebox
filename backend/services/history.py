@@ -42,7 +42,9 @@ def _get_versions_for_generation(generation_id: str, db: Session) -> tuple:
             generation_id=v.generation_id,
             label=v.label,
             audio_path=v.audio_path,
+            duration=v.duration,
             effects_chain=effects_chain,
+            source_version_id=v.source_version_id,
             is_default=v.is_default,
             created_at=v.created_at,
         ))
@@ -66,6 +68,7 @@ async def create_generation(
     engine: Optional[str] = "qwen",
     model_size: Optional[str] = None,
     source: str = "manual",
+    delivery_settings: Optional[dict] = None,
 ) -> GenerationResponse:
     """
     Create a new generation history entry.
@@ -104,6 +107,7 @@ async def create_generation(
         model_size=model_size,
         status=status,
         source=source,
+        delivery_settings=delivery_settings,
         created_at=datetime.utcnow(),
     )
 
@@ -224,6 +228,7 @@ async def list_generations(
             status=generation.status or "completed",
             error=generation.error,
             is_favorited=bool(generation.is_favorited),
+            delivery_settings=generation.delivery_settings,
             created_at=generation.created_at,
             versions=versions,
             active_version_id=active_version_id,

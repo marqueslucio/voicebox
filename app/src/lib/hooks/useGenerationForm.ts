@@ -75,6 +75,7 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
   async function handleSubmit(
     data: GenerationFormValues,
     selectedProfileId: string | null,
+    storyId?: string,
   ): Promise<void> {
     if (!selectedProfileId) {
       toast({
@@ -146,6 +147,7 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
       // This now returns immediately with status="generating"
       const result = await generation.mutateAsync({
         profile_id: selectedProfileId,
+        story_id: storyId,
         text: data.text,
         language: data.language,
         seed: data.seed,

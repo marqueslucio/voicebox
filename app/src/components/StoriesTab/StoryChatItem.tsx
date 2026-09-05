@@ -46,7 +46,8 @@ export function StoryChatItem({
 
   // Check if this item is currently playing based on timecode
   const itemStartMs = item.start_time_ms;
-  const itemEndMs = item.start_time_ms + item.duration * 1000;
+  const itemEndMs =
+    item.start_time_ms + item.duration * 1000 - item.trim_start_ms - item.trim_end_ms;
   const isCurrentlyPlaying = isPlaying && currentTimeMs >= itemStartMs && currentTimeMs < itemEndMs;
 
   const handlePlay = () => {
@@ -166,10 +167,12 @@ export function StoryChatItem({
 
 // Sortable wrapper component
 export function SortableStoryChatItem(
-  props: Omit<StoryChatItemProps, 'dragHandleProps' | 'isDragging'>,
+  props: Omit<StoryChatItemProps, 'dragHandleProps' | 'isDragging'> & { disabled?: boolean },
 ) {
+  const { disabled, ...itemProps } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: props.item.generation_id,
+    id: props.item.id,
+    disabled,
   });
 
   const style = {
@@ -179,7 +182,7 @@ export function SortableStoryChatItem(
 
   return (
     <div ref={setNodeRef} style={style} {...attributes}>
-      <StoryChatItem {...props} dragHandleProps={listeners} isDragging={isDragging} />
+      <StoryChatItem {...itemProps} dragHandleProps={listeners} isDragging={isDragging} />
     </div>
   );
 }

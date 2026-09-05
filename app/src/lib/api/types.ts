@@ -67,6 +67,7 @@ export interface EffectConfig {
 
 export interface GenerationRequest {
   profile_id: string;
+  story_id?: string;
   text: string;
   language: LanguageCode;
   seed?: number;
@@ -93,6 +94,7 @@ export interface GenerationVersionResponse {
   generation_id: string;
   label: string;
   audio_path: string;
+  duration?: number;
   effects_chain?: EffectConfig[];
   source_version_id?: string;
   is_default: boolean;
@@ -115,7 +117,8 @@ export interface GenerationResponse {
   is_favorited?: boolean;
   created_at: string;
   versions?: GenerationVersionResponse[];
-  active_version_id?: string;
+  active_version_id?: string | null;
+  delivery_settings?: StoryDeliverySettings | null;
 }
 
 export interface HistoryQuery {
@@ -128,7 +131,7 @@ export interface HistoryQuery {
 export interface HistoryResponse extends GenerationResponse {
   profile_name: string;
   versions?: GenerationVersionResponse[];
-  active_version_id?: string;
+  active_version_id?: string | null;
 }
 
 export interface HistoryListResponse {
@@ -383,9 +386,24 @@ export interface ActiveTasksResponse {
   generations: ActiveGenerationTask[];
 }
 
+export interface StoryDeliverySettings {
+  enabled: boolean;
+  profile_id: string | null;
+  engine: NonNullable<GenerationRequest['engine']>;
+  model_size: NonNullable<GenerationRequest['model_size']>;
+  language: LanguageCode;
+  speed: number;
+  gap_ms: number;
+  seed: number | null;
+  energy: number;
+  warmth: number;
+  expression: number;
+}
+
 export interface StoryCreate {
   name: string;
   description?: string;
+  delivery_settings?: StoryDeliverySettings | null;
 }
 
 export interface StoryResponse {
@@ -395,13 +413,14 @@ export interface StoryResponse {
   created_at: string;
   updated_at: string;
   item_count: number;
+  delivery_settings?: StoryDeliverySettings | null;
 }
 
 export interface StoryItemDetail {
   id: string;
   story_id: string;
   generation_id: string;
-  version_id?: string;
+  version_id?: string | null;
   start_time_ms: number;
   track: number;
   trim_start_ms: number;
@@ -419,7 +438,7 @@ export interface StoryItemDetail {
   volume: number;
   generation_created_at: string;
   versions?: GenerationVersionResponse[];
-  active_version_id?: string;
+  active_version_id?: string | null;
 }
 
 export interface StoryItemVolumeUpdate {
@@ -436,6 +455,7 @@ export interface StoryDetailResponse {
   description?: string;
   created_at: string;
   updated_at: string;
+  delivery_settings?: StoryDeliverySettings | null;
   items: StoryItemDetail[];
 }
 
@@ -455,7 +475,7 @@ export interface StoryItemBatchUpdate {
 }
 
 export interface StoryItemReorder {
-  generation_ids: string[];
+  item_ids: string[];
 }
 
 export interface StoryItemMove {

@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 from datetime import datetime
 
@@ -76,10 +76,38 @@ class ProfileSampleResponse(BaseModel):
         from_attributes = True
 
 
+class DeliverySettings(BaseModel):
+    """Story-wide, honest delivery controls."""
+
+    enabled: bool = False
+    profile_id: Optional[str] = None
+    engine: str = Field(default="qwen", pattern="^(qwen|qwen_custom_voice|luxtts|chatterbox|chatterbox_turbo|tada|kokoro)$")
+    model_size: str = Field(default="1.7B", pattern="^(1\\.7B|0\\.6B|1B|3B)$")
+    language: str = Field(default="de", pattern="^(zh|en|ja|ko|de|fr|ru|pt|es|it|he|ar|da|el|fi|hi|ms|nl|no|pl|sv|sw|tr)$")
+    speed: float = Field(default=1.0, ge=0.75, le=1.25)
+    gap_ms: int = Field(default=200, ge=0, le=1500)
+    seed: Optional[int] = Field(None, ge=0)
+    energy: float = Field(default=0.5, ge=0.0, le=1.0)
+    warmth: float = Field(default=0.5, ge=0.0, le=1.0)
+    expression: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_capabilities(self):
+        if self.enabled and not self.profile_id:
+            raise ValueError("Enabled delivery settings require profile_id")
+        styled = any(value != 0.5 for value in (self.energy, self.warmth, self.expression))
+        if self.enabled and styled and (
+            self.engine != "qwen_custom_voice" or self.model_size != "1.7B"
+        ):
+            raise ValueError("energy, warmth, and expression require qwen_custom_voice 1.7B")
+        return self
+
+
 class GenerationRequest(BaseModel):
     """Request model for voice generation."""
 
     profile_id: str
+    story_id: Optional[str] = None
     text: str = Field(..., min_length=1, max_length=50000)
     language: str = Field(default="en", pattern="^(zh|en|ja|ko|de|fr|ru|pt|es|it|he|ar|da|el|fi|hi|ms|nl|no|pl|sv|sw|tr)$")
     seed: Optional[int] = Field(None, ge=0)
@@ -119,6 +147,7 @@ class GenerationResponse(BaseModel):
     error: Optional[str] = None
     is_favorited: bool = False
     source: str = "manual"
+    delivery_settings: Optional[DeliverySettings] = None
     created_at: datetime
     versions: Optional[List["GenerationVersionResponse"]] = None
     active_version_id: Optional[str] = None
@@ -153,6 +182,7 @@ class HistoryResponse(BaseModel):
     status: str = "completed"
     error: Optional[str] = None
     is_favorited: bool = False
+    delivery_settings: Optional[DeliverySettings] = None
     created_at: datetime
     versions: Optional[List["GenerationVersionResponse"]] = None
     active_version_id: Optional[str] = None
@@ -568,6 +598,7 @@ class StoryCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=500)
+    delivery_settings: Optional[DeliverySettings] = None
 
 
 class StoryResponse(BaseModel):
@@ -576,6 +607,7 @@ class StoryResponse(BaseModel):
     id: str
     name: str
     description: Optional[str]
+    delivery_settings: Optional[DeliverySettings] = None
     created_at: datetime
     updated_at: datetime
     item_count: int = 0
@@ -622,6 +654,7 @@ class StoryDetailResponse(BaseModel):
     id: str
     name: str
     description: Optional[str]
+    delivery_settings: Optional[DeliverySettings] = None
     created_at: datetime
     updated_at: datetime
     items: List[StoryItemDetail] = []
@@ -654,7 +687,21 @@ class StoryItemBatchUpdate(BaseModel):
 class StoryItemReorder(BaseModel):
     """Request model for reordering story items."""
 
-    generation_ids: List[str] = Field(..., min_length=1)
+    item_ids: Optional[List[str]] = Field(None, min_length=1)
+    generation_ids: Optional[List[str]] = Field(None, min_length=1)
+
+    @model_validator(mode="after")
+    def require_one_id_kind(self):
+        if (self.item_ids is None) == (self.generation_ids is None):
+            raise ValueError("Provide exactly one of item_ids or generation_ids")
+        ids = self.item_ids if self.item_ids is not None else self.generation_ids
+        if ids is not None and len(ids) != len(set(ids)):
+            raise ValueError("Reorder IDs must be unique")
+        return self
+
+
+class RegenerateRequest(BaseModel):
+    story_id: Optional[str] = None
 
 
 class StoryItemMove(BaseModel):
@@ -745,6 +792,7 @@ class GenerationVersionResponse(BaseModel):
     generation_id: str
     label: str
     audio_path: str
+    duration: Optional[float] = None
     effects_chain: Optional[List[EffectConfig]] = None
     source_version_id: Optional[str] = None
     is_default: bool

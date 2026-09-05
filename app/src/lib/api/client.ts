@@ -71,6 +71,14 @@ function formatErrorDetail(detail: unknown, fallback: string): string {
 }
 
 class ApiClient {
+  private storyWriteTail: Promise<unknown> = Promise.resolve();
+
+  private enqueueStoryWrite<T>(write: () => Promise<T>): Promise<T> {
+    const result = this.storyWriteTail.then(write, write);
+    this.storyWriteTail = result.catch(() => undefined);
+    return result;
+  }
+
   private getBaseUrl(): string {
     const serverUrl = useServerStore.getState().serverUrl;
     return serverUrl;
@@ -270,9 +278,10 @@ class ApiClient {
     });
   }
 
-  async regenerateGeneration(generationId: string): Promise<GenerationResponse> {
+  async regenerateGeneration(generationId: string, storyId?: string): Promise<GenerationResponse> {
     return this.request<GenerationResponse>(`/generate/${generationId}/regenerate`, {
       method: 'POST',
+      body: storyId ? JSON.stringify({ story_id: storyId }) : undefined,
     });
   }
 
@@ -427,9 +436,7 @@ class ApiClient {
 
   // Captures
   async listCaptures(limit = 50, offset = 0): Promise<CaptureListResponse> {
-    return this.request<CaptureListResponse>(
-      `/captures?limit=${limit}&offset=${offset}`,
-    );
+    return this.request<CaptureListResponse>(`/captures?limit=${limit}&offset=${offset}`);
   }
 
   async getCapture(captureId: string): Promise<CaptureResponse> {
@@ -467,10 +474,7 @@ class ApiClient {
     });
   }
 
-  async refineCapture(
-    captureId: string,
-    body: CaptureRefineRequest,
-  ): Promise<CaptureResponse> {
+  async refineCapture(captureId: string, body: CaptureRefineRequest): Promise<CaptureResponse> {
     return this.request<CaptureResponse>(`/captures/${captureId}/refine`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -511,9 +515,7 @@ class ApiClient {
     return this.request<GenerationSettings>('/settings/generation');
   }
 
-  async updateGenerationSettings(
-    patch: GenerationSettingsUpdate,
-  ): Promise<GenerationSettings> {
+  async updateGenerationSettings(patch: GenerationSettingsUpdate): Promise<GenerationSettings> {
     return this.request<GenerationSettings>('/settings/generation', {
       method: 'PUT',
       body: JSON.stringify(patch),
@@ -525,9 +527,7 @@ class ApiClient {
     return this.request<MCPClientBindingListResponse>('/mcp/bindings');
   }
 
-  async upsertMCPBinding(
-    data: MCPClientBindingUpsert,
-  ): Promise<MCPClientBinding> {
+  async upsertMCPBinding(data: MCPClientBindingUpsert): Promise<MCPClientBinding> {
     return this.request<MCPClientBinding>('/mcp/bindings', {
       method: 'PUT',
       body: JSON.stringify(data),
@@ -535,10 +535,9 @@ class ApiClient {
   }
 
   async deleteMCPBinding(clientId: string): Promise<{ deleted: string }> {
-    return this.request<{ deleted: string }>(
-      `/mcp/bindings/${encodeURIComponent(clientId)}`,
-      { method: 'DELETE' },
-    );
+    return this.request<{ deleted: string }>(`/mcp/bindings/${encodeURIComponent(clientId)}`, {
+      method: 'DELETE',
+    });
   }
 
   // Model Management
@@ -719,10 +718,12 @@ class ApiClient {
   }
 
   async createStory(data: StoryCreate): Promise<StoryResponse> {
-    return this.request<StoryResponse>('/stories', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryResponse>('/stories', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async getStory(storyId: string): Promise<StoryDetailResponse> {
@@ -730,43 +731,51 @@ class ApiClient {
   }
 
   async updateStory(storyId: string, data: StoryCreate): Promise<StoryResponse> {
-    return this.request<StoryResponse>(`/stories/${storyId}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryResponse>(`/stories/${storyId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async deleteStory(storyId: string): Promise<void> {
-    await this.request<void>(`/stories/${storyId}`, {
-      method: 'DELETE',
-    });
+    await this.enqueueStoryWrite(() =>
+      this.request<void>(`/stories/${storyId}`, { method: 'DELETE' }),
+    );
   }
 
   async addStoryItem(storyId: string, data: StoryItemCreate): Promise<StoryItemDetail> {
-    return this.request<StoryItemDetail>(`/stories/${storyId}/items`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail>(`/stories/${storyId}/items`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async removeStoryItem(storyId: string, itemId: string): Promise<void> {
-    await this.request<void>(`/stories/${storyId}/items/${itemId}`, {
-      method: 'DELETE',
-    });
+    await this.enqueueStoryWrite(() =>
+      this.request<void>(`/stories/${storyId}/items/${itemId}`, { method: 'DELETE' }),
+    );
   }
 
   async updateStoryItemTimes(storyId: string, data: StoryItemBatchUpdate): Promise<void> {
-    await this.request<void>(`/stories/${storyId}/items/times`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    await this.enqueueStoryWrite(() =>
+      this.request<void>(`/stories/${storyId}/items/times`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async reorderStoryItems(storyId: string, data: StoryItemReorder): Promise<StoryItemDetail[]> {
-    return this.request<StoryItemDetail[]>(`/stories/${storyId}/items/reorder`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail[]>(`/stories/${storyId}/items/reorder`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async moveStoryItem(
@@ -774,10 +783,12 @@ class ApiClient {
     itemId: string,
     data: StoryItemMove,
   ): Promise<StoryItemDetail> {
-    return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/move`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/move`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async trimStoryItem(
@@ -785,10 +796,12 @@ class ApiClient {
     itemId: string,
     data: StoryItemTrim,
   ): Promise<StoryItemDetail> {
-    return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/trim`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/trim`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async updateStoryItemVolume(
@@ -796,10 +809,12 @@ class ApiClient {
     itemId: string,
     data: StoryItemVolumeUpdate,
   ): Promise<StoryItemDetail> {
-    return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/volume`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/volume`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async splitStoryItem(
@@ -807,16 +822,20 @@ class ApiClient {
     itemId: string,
     data: StoryItemSplit,
   ): Promise<StoryItemDetail[]> {
-    return this.request<StoryItemDetail[]>(`/stories/${storyId}/items/${itemId}/split`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail[]>(`/stories/${storyId}/items/${itemId}/split`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async duplicateStoryItem(storyId: string, itemId: string): Promise<StoryItemDetail> {
-    return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/duplicate`, {
-      method: 'POST',
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/duplicate`, {
+        method: 'POST',
+      }),
+    );
   }
 
   async setStoryItemVersion(
@@ -824,10 +843,12 @@ class ApiClient {
     itemId: string,
     data: StoryItemVersionUpdate,
   ): Promise<StoryItemDetail> {
-    return this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/version`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    return this.enqueueStoryWrite(() =>
+      this.request<StoryItemDetail>(`/stories/${storyId}/items/${itemId}/version`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    );
   }
 
   async exportStoryAudio(storyId: string): Promise<Blob> {

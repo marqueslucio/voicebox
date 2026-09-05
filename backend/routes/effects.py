@@ -214,6 +214,7 @@ async def apply_effects_to_generation(
         effects_chain=chain_dicts,
         is_default=data.set_as_default,
         source_version_id=source_version_id,
+        duration=len(processed_audio) / sample_rate,
     )
 
     return version

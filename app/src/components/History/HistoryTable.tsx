@@ -53,6 +53,7 @@ import {
   useHistory,
   useImportGeneration,
 } from '@/lib/hooks/useHistory';
+import { resolveAudioVersionId } from '@/lib/story';
 import { cn } from '@/lib/utils/cn';
 import { formatDate, formatDuration, formatEngineName } from '@/lib/utils/format';
 import { useGenerationStore } from '@/stores/generationStore';
@@ -203,14 +204,21 @@ export function HistoryTable() {
     return () => scrollEl.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const handlePlay = (audioId: string, text: string, profileId: string) => {
+  const handlePlay = (generation: HistoryResponse) => {
+    const versionId = resolveAudioVersionId(generation);
+    const nextAudioUrl = versionId
+      ? apiClient.getVersionAudioUrl(versionId)
+      : apiClient.getAudioUrl(generation.id);
     // If clicking the same audio, restart it from the beginning
-    if (currentAudioId === audioId) {
+    if (currentAudioId === generation.id && audioUrl === nextAudioUrl) {
       restartCurrentAudio();
     } else {
-      // Otherwise, load the new audio and auto-play it
-      const audioUrl = apiClient.getAudioUrl(audioId);
-      setAudioWithAutoPlay(audioUrl, audioId, profileId, text.substring(0, 50));
+      setAudioWithAutoPlay(
+        nextAudioUrl,
+        generation.id,
+        generation.profile_id,
+        generation.text.substring(0, 50),
+      );
     }
   };
 
@@ -262,6 +270,7 @@ export function HistoryTable() {
       const result = await apiClient.retryGeneration(generationId);
       addPendingGeneration(result.id);
       queryClient.invalidateQueries({ queryKey: ['history'] });
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
     } catch (error) {
       toast({
         title: 'Retry failed',
@@ -320,6 +329,7 @@ export function HistoryTable() {
         set_as_default: true,
       });
       queryClient.invalidateQueries({ queryKey: ['history'] });
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
 
       // If the player is currently on this generation, reload with the new version audio
       if (currentAudioId === effectsTargetId) {
@@ -352,6 +362,7 @@ export function HistoryTable() {
     try {
       await apiClient.setDefaultVersion(generationId, versionId);
       queryClient.invalidateQueries({ queryKey: ['history'] });
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
     } catch (error) {
       toast({
         title: 'Failed to switch version',
@@ -505,7 +516,7 @@ export function HistoryTable() {
                       if (target.closest('textarea') || window.getSelection()?.toString()) {
                         return;
                       }
-                      handlePlay(gen.id, gen.text, gen.profile_id);
+                      handlePlay(gen);
                     }}
                     onKeyDown={(e) => {
                       if (!isPlayable) return;
@@ -513,7 +524,7 @@ export function HistoryTable() {
                       if (target.closest('textarea') || target.closest('button')) return;
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        handlePlay(gen.id, gen.text, gen.profile_id);
+                        handlePlay(gen);
                       }
                     }}
                   >
@@ -650,9 +661,7 @@ export function HistoryTable() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={() => handlePlay(gen.id, gen.text, gen.profile_id)}
-                            >
+                            <DropdownMenuItem onClick={() => handlePlay(gen)}>
                               <Play className="mr-2 h-4 w-4" />
                               {t('history.actions.play')}
                             </DropdownMenuItem>

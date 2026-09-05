@@ -8,8 +8,9 @@ import { useAutoUpdater } from '@/hooks/useAutoUpdater';
 import { useThemeSync } from '@/hooks/useThemeSync';
 import { apiClient } from '@/lib/api/client';
 import type { HealthResponse } from '@/lib/api/types';
-import { useChordSync } from '@/lib/hooks/useChordSync';
 import { TOP_SAFE_AREA_PADDING } from '@/lib/constants/ui';
+import { useChordSync } from '@/lib/hooks/useChordSync';
+import { queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils/cn';
 import { usePlatform } from '@/platform/PlatformContext';
 import { router } from '@/router';
@@ -50,6 +51,11 @@ function isPortInUseError(error: unknown): boolean {
     msg.includes('EADDRINUSE') ||
     msg.includes('address already in use')
   );
+}
+
+export function notifyServerReady(markReady: () => void): void {
+  queryClient.invalidateQueries();
+  markReady();
 }
 
 const LOADING_MESSAGES = [
@@ -117,7 +123,7 @@ function MainApp() {
   // Setup lifecycle callbacks
   useEffect(() => {
     platform.lifecycle.onServerReady = () => {
-      setServerReady(true);
+      notifyServerReady(() => setServerReady(true));
     };
     // Empty dependency array - platform is stable from context, only run once
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,7 +181,7 @@ function MainApp() {
         console.log('Server is ready at:', serverUrl);
         // Update the server URL in the store with the dynamically assigned port
         useServerStore.getState().setServerUrl(serverUrl);
-        setServerReady(true);
+        notifyServerReady(() => setServerReady(true));
         // Mark that we started the server (so we know to stop it on close)
         window.__voiceboxServerStartedByApp = true;
       })
@@ -208,7 +214,7 @@ function MainApp() {
             }
             console.log('External Voicebox server detected via health check');
             clearInterval(pollInterval);
-            setServerReady(true);
+            notifyServerReady(() => setServerReady(true));
           } catch {
             // Server not ready yet, keep polling
           }

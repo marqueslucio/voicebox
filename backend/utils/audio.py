@@ -8,6 +8,21 @@ import librosa
 from typing import Tuple, Optional
 
 
+def time_stretch_audio(audio: np.ndarray, speed: float) -> np.ndarray:
+    """Pitch-preserving speed adjustment with strict finite-audio checks."""
+    if not np.isfinite(speed):
+        raise ValueError("Audio speed must be finite")
+    rate = float(np.clip(speed, 0.75, 1.25))
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim != 1 or samples.size == 0 or not np.isfinite(samples).all():
+        raise ValueError("Generated audio must be non-empty, finite, and mono")
+    if rate != 1.0:
+        samples = librosa.effects.time_stretch(samples, rate=rate)
+    if samples.size == 0 or not np.isfinite(samples).all():
+        raise ValueError("Time-stretched audio is empty or non-finite")
+    return np.asarray(samples, dtype=np.float32)
+
+
 def normalize_audio(
     audio: np.ndarray,
     target_db: float = -20.0,

@@ -86,6 +86,7 @@ async def get_generation(
         raise HTTPException(status_code=404, detail="Generation not found")
 
     gen, profile_name = result
+    versions, active_version_id = history._get_versions_for_generation(gen.id, db)
     return models.HistoryResponse(
         id=gen.id,
         profile_id=gen.profile_id,
@@ -101,7 +102,10 @@ async def get_generation(
         status=gen.status or "completed",
         error=gen.error,
         is_favorited=bool(gen.is_favorited),
+        delivery_settings=gen.delivery_settings,
         created_at=gen.created_at,
+        versions=versions,
+        active_version_id=active_version_id,
     )
 
 

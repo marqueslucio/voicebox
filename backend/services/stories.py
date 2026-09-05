@@ -28,11 +28,40 @@ from ..database import (
     Story as DBStory,
     StoryItem as DBStoryItem,
     Generation as DBGeneration,
+    GenerationVersion as DBGenerationVersion,
     VoiceProfile as DBVoiceProfile,
 )
 from .history import _get_versions_for_generation
+from . import profiles as profile_service
 from ..utils.audio import load_audio, save_audio
 import numpy as np
+
+
+def _selected_version(item: DBStoryItem, generation: DBGeneration, db: Session):
+    query = db.query(DBGenerationVersion).filter_by(generation_id=generation.id)
+    if item.version_id:
+        return query.filter_by(id=item.version_id).first()
+    return query.filter_by(is_default=True).first() or query.order_by(DBGenerationVersion.created_at).first()
+
+
+def _item_duration_seconds(item: DBStoryItem, generation: DBGeneration, db: Session) -> float:
+    version = _selected_version(item, generation, db)
+    return float(version.duration if version and version.duration is not None else generation.duration or 0)
+
+
+def _story_gap_ms(story: DBStory) -> int:
+    settings = getattr(story, "delivery_settings", None) or {}
+    return int(settings.get("gap_ms", 200))
+
+
+def _validate_delivery_profile(data: StoryCreate, db: Session) -> None:
+    settings = data.delivery_settings
+    if not settings or not settings.enabled:
+        return
+    profile = db.query(DBVoiceProfile).filter_by(id=settings.profile_id).first()
+    if not profile:
+        raise ValueError("Delivery profile not found")
+    profile_service.validate_profile_engine(profile, settings.engine)
 
 
 def _build_item_detail(
@@ -44,13 +73,8 @@ def _build_item_detail(
     """Build a StoryItemDetail with version info from a story item and its generation."""
     versions, active_version_id = _get_versions_for_generation(generation.id, db)
 
-    # Resolve the audio path: if version_id is set, use that version's audio
-    audio_path = generation.audio_path
-    if item.version_id and versions:
-        for v in versions:
-            if v.id == item.version_id:
-                audio_path = v.audio_path
-                break
+    selected_version = _selected_version(item, generation, db)
+    audio_path = selected_version.audio_path if selected_version else generation.audio_path
 
     return StoryItemDetail(
         id=item.id,
@@ -67,7 +91,7 @@ def _build_item_detail(
         text=generation.text,
         language=generation.language,
         audio_path=audio_path,
-        duration=generation.duration,
+        duration=_item_duration_seconds(item, generation, db),
         seed=generation.seed,
         instruct=generation.instruct,
         engine=generation.engine,
@@ -92,10 +116,12 @@ async def create_story(
     Returns:
         Created story
     """
+    _validate_delivery_profile(data, db)
     db_story = DBStory(
         id=str(uuid.uuid4()),
         name=data.name,
         description=data.description,
+        delivery_settings=data.delivery_settings.model_dump() if data.delivery_settings else None,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -204,8 +230,11 @@ async def update_story(
     if not story:
         return None
 
+    _validate_delivery_profile(data, db)
     story.name = data.name
     story.description = data.description
+    if "delivery_settings" in data.model_fields_set:
+        story.delivery_settings = data.delivery_settings.model_dump() if data.delivery_settings else None
     story.updated_at = datetime.utcnow()
 
     db.commit()
@@ -301,11 +330,14 @@ async def add_item_to_story(
         else:
             max_end_time_ms = 0
             for item, gen in existing_items:
-                item_end_ms = item.start_time_ms + int(gen.duration * 1000)
+                duration_ms = int(_item_duration_seconds(item, gen, db) * 1000)
+                item_end_ms = item.start_time_ms + max(
+                    0,
+                    duration_ms - item.trim_start_ms - item.trim_end_ms,
+                )
                 max_end_time_ms = max(max_end_time_ms, item_end_ms)
 
-            # Add 200ms gap after the last item
-            start_time_ms = max_end_time_ms + 200
+            start_time_ms = max_end_time_ms + _story_gap_ms(story)
 
     # Create item
     item = DBStoryItem(
@@ -459,7 +491,7 @@ async def trim_story_item(
         return None
 
     # Validate trim values don't exceed duration
-    max_duration_ms = int(generation.duration * 1000)
+    max_duration_ms = int(_item_duration_seconds(item, generation, db) * 1000)
     if data.trim_start_ms + data.trim_end_ms >= max_duration_ms:
         return None  # Invalid trim - would result in zero or negative duration
 
@@ -552,7 +584,7 @@ async def split_story_item(
     # Calculate effective duration and validate split point
     current_trim_start = getattr(item, "trim_start_ms", 0)
     current_trim_end = getattr(item, "trim_end_ms", 0)
-    original_duration_ms = int(generation.duration * 1000)
+    original_duration_ms = int(_item_duration_seconds(item, generation, db) * 1000)
     effective_duration_ms = original_duration_ms - current_trim_start - current_trim_end
 
     # Validate split_time_ms is within the effective duration
@@ -628,6 +660,10 @@ async def duplicate_story_item(
     if not original_item:
         return None
 
+    story = db.query(DBStory).filter_by(id=story_id).first()
+    if not story:
+        return None
+
     # Get the generation
     generation = db.query(DBGeneration).filter_by(id=original_item.generation_id).first()
     if not generation:
@@ -636,7 +672,7 @@ async def duplicate_story_item(
     # Calculate effective duration
     current_trim_start = getattr(original_item, "trim_start_ms", 0)
     current_trim_end = getattr(original_item, "trim_end_ms", 0)
-    original_duration_ms = int(generation.duration * 1000)
+    original_duration_ms = int(_item_duration_seconds(original_item, generation, db) * 1000)
     effective_duration_ms = original_duration_ms - current_trim_start - current_trim_end
 
     # Create duplicate item - place it right after the original
@@ -645,7 +681,7 @@ async def duplicate_story_item(
         story_id=story_id,
         generation_id=original_item.generation_id,  # Same generation as original
         version_id=getattr(original_item, "version_id", None),  # Preserve pinned version
-        start_time_ms=original_item.start_time_ms + effective_duration_ms + 200,  # 200ms gap
+        start_time_ms=original_item.start_time_ms + effective_duration_ms + _story_gap_ms(story),
         track=original_item.track,
         trim_start_ms=current_trim_start,
         trim_end_ms=current_trim_end,
@@ -656,9 +692,7 @@ async def duplicate_story_item(
     db.add(new_item)
 
     # Update story updated_at
-    story = db.query(DBStory).filter_by(id=story_id).first()
-    if story:
-        story.updated_at = datetime.utcnow()
+    story.updated_at = datetime.utcnow()
 
     db.commit()
     db.refresh(new_item)
@@ -708,18 +742,18 @@ async def update_story_item_times(
 
 async def reorder_story_items(
     story_id: str,
-    generation_ids: List[str],
+    item_ids: Optional[List[str]],
     db: Session,
-    gap_ms: int = 200,
+    generation_ids: Optional[List[str]] = None,
 ) -> Optional[List[StoryItemDetail]]:
     """
     Reorder story items and recalculate timecodes.
 
     Args:
         story_id: Story ID
-        generation_ids: List of generation IDs in the desired order
+        item_ids: Unique story item IDs in the desired order
         db: Database session
-        gap_ms: Gap in milliseconds between items (default 200ms)
+        generation_ids: Legacy IDs, accepted only for unique generations
 
     Returns:
         Updated list of story items with new timecodes, or None if invalid
@@ -737,25 +771,35 @@ async def reorder_story_items(
         .all()
     )
 
-    # Create maps for quick lookup
-    item_map = {item.generation_id: (item, gen, profile_name) for item, gen, profile_name in items_with_gen}
-
-    # Verify all generation IDs belong to this story
-    if set(generation_ids) != set(item_map.keys()):
+    item_map = {item.id: (item, gen, profile_name) for item, gen, profile_name in items_with_gen}
+    if item_ids is None:
+        if generation_ids is None or len(generation_ids) != len(set(generation_ids)):
+            return None
+        generation_map = {item.generation_id: item.id for item, _gen, _name in items_with_gen}
+        if len(generation_map) != len(items_with_gen) or set(generation_ids) != set(generation_map):
+            return None
+        item_ids = [generation_map[generation_id] for generation_id in generation_ids]
+    if len(item_ids) != len(set(item_ids)) or set(item_ids) != set(item_map):
         return None
 
     # Recalculate timecodes based on new order
     current_time_ms = 0
     updated_items = []
 
-    for gen_id in generation_ids:
-        item, generation, profile_name = item_map[gen_id]
+    gap_ms = _story_gap_ms(story)
+    for item_id in item_ids:
+        item, generation, profile_name = item_map[item_id]
 
         # Update the item's start time
         item.start_time_ms = current_time_ms
 
         # Calculate the duration in ms
-        duration_ms = int(generation.duration * 1000)
+        duration_ms = max(
+            0,
+            int(_item_duration_seconds(item, generation, db) * 1000)
+            - item.trim_start_ms
+            - item.trim_end_ms,
+        )
 
         # Move to next position (current end + gap)
         current_time_ms += duration_ms + gap_ms
@@ -805,8 +849,6 @@ async def set_story_item_version(
 
     # Validate version_id belongs to this generation if provided
     if data.version_id:
-        from ..database import GenerationVersion as DBGenerationVersion
-
         version = (
             db.query(DBGenerationVersion)
             .filter_by(
@@ -816,6 +858,11 @@ async def set_story_item_version(
             .first()
         )
         if not version:
+            return None
+        if (
+            version.duration is not None
+            and item.trim_start_ms + item.trim_end_ms >= int(version.duration * 1000)
+        ):
             return None
 
     item.version_id = data.version_id
@@ -871,9 +918,10 @@ async def export_story_audio(
         # Resolve audio path: use pinned version if set, otherwise generation default
         resolved_audio_path = generation.audio_path
         if getattr(item, "version_id", None):
-            from ..database import GenerationVersion as DBGenerationVersion
-
-            version = db.query(DBGenerationVersion).filter_by(id=item.version_id).first()
+            version = db.query(DBGenerationVersion).filter_by(
+                id=item.version_id,
+                generation_id=generation.id,
+            ).first()
             if version:
                 resolved_audio_path = version.audio_path
 
@@ -889,10 +937,6 @@ async def export_story_audio(
             trim_start_ms = getattr(item, "trim_start_ms", 0)
             trim_end_ms = getattr(item, "trim_end_ms", 0)
 
-            # Calculate effective duration
-            original_duration_ms = int(generation.duration * 1000)
-            effective_duration_ms = original_duration_ms - trim_start_ms - trim_end_ms
-
             # Slice audio based on trim values
             trim_start_sample = int((trim_start_ms / 1000.0) * sample_rate)
             trim_end_sample = int((trim_end_ms / 1000.0) * sample_rate)
@@ -904,6 +948,10 @@ async def export_story_audio(
                 )
             else:
                 trimmed_audio = audio[trim_start_sample:]
+
+            if not len(trimmed_audio):
+                continue
+            effective_duration_ms = int(len(trimmed_audio) / sample_rate * 1000)
 
             # Apply per-clip volume to the export mix.
             volume = float(getattr(item, "volume", 1.0) or 1.0)

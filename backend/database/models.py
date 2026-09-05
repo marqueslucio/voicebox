@@ -82,6 +82,7 @@ class Generation(Base):
     # profile's personality LLM before TTS. Future sources (bulk import,
     # agent replies, etc.) can extend this.
     source = Column(String, nullable=False, default="manual")
+    delivery_settings = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -93,6 +94,7 @@ class Story(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, nullable=False)
     description = Column(Text)
+    delivery_settings = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -135,6 +137,7 @@ class GenerationVersion(Base):
     generation_id = Column(String, ForeignKey("generations.id"), nullable=False)
     label = Column(String, nullable=False)
     audio_path = Column(String, nullable=False)
+    duration = Column(Float, nullable=True)
     effects_chain = Column(Text, nullable=True)
     source_version_id = Column(String, ForeignKey("generation_versions.id"), nullable=True)
     is_default = Column(Boolean, default=False)

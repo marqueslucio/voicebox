@@ -37,6 +37,7 @@ import {
   useTrimStoryItem,
   useUpdateStoryItemVolume,
 } from '@/lib/hooks/useStories';
+import { resolveAudioVersionId } from '@/lib/story';
 import { cn } from '@/lib/utils/cn';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useStoryStore } from '@/stores/storyStore';
@@ -251,7 +252,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
     [selectedClipId, items],
   );
   const selectedItemVersions = selectedItem?.versions;
-  const hasMultipleVersions = selectedItemVersions && selectedItemVersions.length > 1;
+  const hasVersions = selectedItemVersions && selectedItemVersions.length > 0;
 
   // Determine which version label is active for the selected clip
   const activeVersionLabel = useMemo(() => {
@@ -261,30 +262,25 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
       const pinned = selectedItemVersions.find((v) => v.id === selectedItem.version_id);
       return pinned?.label ?? null;
     }
-    // Otherwise use the generation's default version
-    const defaultVersion = selectedItemVersions.find((v) => v.is_default);
-    return defaultVersion?.label ?? null;
+    return 'Follow latest';
   }, [selectedItem, selectedItemVersions]);
 
   const handleSetVersion = useCallback(
-    (versionId: string | null) => {
-      if (!selectedClipId) return;
-      setItemVersion.mutate(
-        {
+    async (versionId: string | null) => {
+      if (!selectedClipId || setItemVersion.isPending) return;
+      try {
+        await setItemVersion.mutateAsync({
           storyId,
           itemId: selectedClipId,
           data: { version_id: versionId },
-        },
-        {
-          onError: (error) => {
-            toast({
-              title: 'Failed to set version',
-              description: error instanceof Error ? error.message : String(error),
-              variant: 'destructive',
-            });
-          },
-        },
-      );
+        });
+      } catch (error) {
+        toast({
+          title: 'Failed to set version',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        });
+      }
     },
     [selectedClipId, storyId, setItemVersion, toast],
   );
@@ -315,9 +311,9 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
   const isActiveStory = playbackStoryId === storyId;
   const isCurrentlyPlaying = isPlaying && isActiveStory;
 
-  // Auto-activate this story when the editor is shown so playhead is visible
+  // Keep the playback snapshot aligned with optimistic edits and new versions.
   useEffect(() => {
-    if (items.length > 0 && !isActiveStory) {
+    if (items.length > 0) {
       const totalDuration = Math.max(
         ...items.map((item) => {
           const trimStart = item.trim_start_ms || 0;
@@ -329,7 +325,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
       );
       setActiveStory(storyId, items, totalDuration);
     }
-  }, [storyId, items, isActiveStory, setActiveStory]);
+  }, [storyId, items, setActiveStory]);
 
   // Sort items by start time for play
   const sortedItems = useMemo(() => {
@@ -466,7 +462,10 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
   useEffect(() => {
     if (hasAppliedDefaultZoomRef.current) return;
     if (visibleTrackWidth <= 0) return;
-    const defaultScope = Math.min(DEFAULT_VISIBLE_SECONDS, Math.max(projectSeconds, MIN_VISIBLE_SECONDS));
+    const defaultScope = Math.min(
+      DEFAULT_VISIBLE_SECONDS,
+      Math.max(projectSeconds, MIN_VISIBLE_SECONDS),
+    );
     setPixelsPerSecond(visibleTrackWidth / defaultScope);
     hasAppliedDefaultZoomRef.current = true;
   }, [visibleTrackWidth, projectSeconds]);
@@ -574,7 +573,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
 
   const handleTrimStart = (e: React.MouseEvent, item: StoryItemDetail, side: 'start' | 'end') => {
     e.stopPropagation();
-    if (!tracksRef.current) return;
+    if (!tracksRef.current || trimItem.isPending) return;
     setTrimmingItem(item.id);
     setTrimSide(side);
     setSelectedClipId(item.id);
@@ -639,7 +638,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
     [trimmingItem, trimSide, trimStartX, pixelsToMs],
   );
 
-  const handleTrimEnd = useCallback(() => {
+  const handleTrimEnd = useCallback(async () => {
     if (!trimmingItem || !trimSide || !trimStartItemRef.current) {
       setTrimmingItem(null);
       setTrimSide(null);
@@ -657,25 +656,22 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
 
     // Only update if values changed
     if (finalTrimStart !== initialTrimStart || finalTrimEnd !== initialTrimEnd) {
-      trimItem.mutate(
-        {
+      try {
+        await trimItem.mutateAsync({
           storyId,
           itemId: trimmingItem,
           data: {
             trim_start_ms: finalTrimStart,
             trim_end_ms: finalTrimEnd,
           },
-        },
-        {
-          onError: (error) => {
-            toast({
-              title: 'Failed to trim clip',
-              description: error instanceof Error ? error.message : String(error),
-              variant: 'destructive',
-            });
-          },
-        },
-      );
+        });
+      } catch (error) {
+        toast({
+          title: 'Failed to trim clip',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        });
+      }
     }
 
     setTrimmingItem(null);
@@ -684,7 +680,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
     trimStartItemRef.current = null;
   }, [trimmingItem, trimSide, tempTrimValues, storyId, trimItem, toast]);
 
-  const handleSplit = useCallback(() => {
+  const handleSplit = useCallback(async () => {
     if (!selectedClipId || splitItem.isPending) return;
 
     const item = items.find((i) => i.id === selectedClipId);
@@ -705,25 +701,20 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
       return;
     }
 
-    splitItem.mutate(
-      {
+    try {
+      await splitItem.mutateAsync({
         storyId,
         itemId: selectedClipId,
         data: { split_time_ms: splitTimeMs },
-      },
-      {
-        onSuccess: () => {
-          setSelectedClipId(null);
-        },
-        onError: (error) => {
-          toast({
-            title: 'Failed to split clip',
-            description: error instanceof Error ? error.message : String(error),
-            variant: 'destructive',
-          });
-        },
-      },
-    );
+      });
+      setSelectedClipId(null);
+    } catch (error) {
+      toast({
+        title: 'Failed to split clip',
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
   }, [
     selectedClipId,
     items,
@@ -735,24 +726,21 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
     setSelectedClipId,
   ]);
 
-  const handleDuplicate = useCallback(() => {
-    if (!selectedClipId) return;
+  const handleDuplicate = useCallback(async () => {
+    if (!selectedClipId || duplicateItem.isPending) return;
 
-    duplicateItem.mutate(
-      {
+    try {
+      await duplicateItem.mutateAsync({
         storyId,
         itemId: selectedClipId,
-      },
-      {
-        onError: (error) => {
-          toast({
-            title: 'Failed to duplicate clip',
-            description: error instanceof Error ? error.message : String(error),
-            variant: 'destructive',
-          });
-        },
-      },
-    );
+      });
+    } catch (error) {
+      toast({
+        title: 'Failed to duplicate clip',
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
   }, [selectedClipId, storyId, duplicateItem, toast]);
 
   const handleDelete = useCallback(() => {
@@ -781,7 +769,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
   const handleRegenerate = useCallback(async () => {
     if (!selectedItem) return;
     try {
-      await apiClient.regenerateGeneration(selectedItem.generation_id);
+      await apiClient.regenerateGeneration(selectedItem.generation_id, storyId);
       addPendingGeneration(selectedItem.generation_id);
     } catch (error) {
       toast({
@@ -790,7 +778,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
         variant: 'destructive',
       });
     }
-  }, [selectedItem, addPendingGeneration, toast]);
+  }, [selectedItem, storyId, addPendingGeneration, toast]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -848,7 +836,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
 
   const handleDragStart = (e: React.MouseEvent, item: StoryItemDetail) => {
     e.stopPropagation();
-    if (!tracksRef.current) return;
+    if (!tracksRef.current || moveItem.isPending) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     setDragOffset({
@@ -875,11 +863,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
 
       const rect = tracksRef.current.getBoundingClientRect();
       const x =
-        e.clientX -
-        rect.left +
-        tracksRef.current.scrollLeft -
-        dragOffset.x -
-        LABEL_COL_WIDTH;
+        e.clientX - rect.left + tracksRef.current.scrollLeft - dragOffset.x - LABEL_COL_WIDTH;
       // Subtract ruler height since clips are positioned relative to tracks area
       const y = e.clientY - rect.top - dragOffset.y - TIME_RULER_HEIGHT;
 
@@ -888,7 +872,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
     [draggingItem, dragOffset],
   );
 
-  const handleDragEnd = useCallback(() => {
+  const handleDragEnd = useCallback(async () => {
     if (!draggingItem || !tracksRef.current) {
       setDraggingItem(null);
       return;
@@ -910,25 +894,22 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
 
     // Check if position changed
     if (newTimeMs !== item.start_time_ms || newTrack !== item.track) {
-      moveItem.mutate(
-        {
+      try {
+        await moveItem.mutateAsync({
           storyId,
           itemId: item.id,
           data: {
             start_time_ms: newTimeMs,
             track: newTrack,
           },
-        },
-        {
-          onError: (error) => {
-            toast({
-              title: 'Failed to move item',
-              description: error instanceof Error ? error.message : String(error),
-              variant: 'destructive',
-            });
-          },
-        },
-      );
+        });
+      } catch (error) {
+        toast({
+          title: 'Failed to move item',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        });
+      }
     }
 
     setDraggingItem(null);
@@ -1032,8 +1013,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
 
       // Recompute the thumb width that corresponded to the drag start, then
       // apply the mouse delta to the dragged edge.
-      const startTimelinePx =
-        (totalDurationMs / 1000) * drag.startPixelsPerSecond + 200;
+      const startTimelinePx = (totalDurationMs / 1000) * drag.startPixelsPerSecond + 200;
       const startThumbWidth = Math.max(
         30,
         Math.min(scrollbarTrackWidth, (containerWidth / startTimelinePx) * scrollbarTrackWidth),
@@ -1058,8 +1038,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
             }
           : {
               type: 'right',
-              timeMs:
-                ((drag.startScrollLeft + containerWidth) / drag.startPixelsPerSecond) * 1000,
+              timeMs: ((drag.startScrollLeft + containerWidth) / drag.startPixelsPerSecond) * 1000,
             };
 
       setPixelsPerSecond(newPps);
@@ -1074,7 +1053,15 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-  }, [maxTimelineScroll, thumbRange, scrollbarTrackWidth, containerWidth, totalDurationMs, minPps, maxPps]);
+  }, [
+    maxTimelineScroll,
+    thumbRange,
+    scrollbarTrackWidth,
+    containerWidth,
+    totalDurationMs,
+    minPps,
+    maxPps,
+  ]);
 
   if (items.length === 0) {
     return null;
@@ -1195,7 +1182,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
                   <RotateCcw className="h-4 w-4" />
                 </Button>
               )}
-              {hasMultipleVersions && (
+              {hasVersions && (
                 <>
                   <div className="w-px h-4 bg-border mx-1" />
                   <DropdownMenu>
@@ -1212,10 +1199,20 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="center" className="min-w-[160px]">
+                      <DropdownMenuItem
+                        onClick={() => handleSetVersion(null)}
+                        className="gap-2 text-xs"
+                      >
+                        <Check
+                          className={cn(
+                            'h-3 w-3',
+                            selectedItem?.version_id ? 'opacity-0' : 'opacity-100',
+                          )}
+                        />
+                        <span>Follow latest</span>
+                      </DropdownMenuItem>
                       {selectedItemVersions.map((version) => {
-                        const isActive = selectedItem?.version_id
-                          ? version.id === selectedItem.version_id
-                          : version.is_default;
+                        const isActive = version.id === selectedItem?.version_id;
                         return (
                           <DropdownMenuItem
                             key={version.id}
@@ -1434,7 +1431,7 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
                       <div className="absolute inset-0 top-3">
                         <ClipWaveform
                           generationId={item.generation_id}
-                          versionId={item.version_id}
+                          versionId={resolveAudioVersionId(item)}
                           width={clipWidth}
                           trimStartMs={displayTrimStart}
                           trimEndMs={displayTrimEnd}
@@ -1478,15 +1475,9 @@ export function StoryTrackEditor({ storyId, items }: StoryTrackEditorProps) {
         </div>
 
         {/* Horizontal timeline scrollbar + zoom handles */}
-        <div
-          className="flex border-t bg-background/40"
-          style={{ height: `${SCRUB_BAR_HEIGHT}px` }}
-        >
+        <div className="flex border-t bg-background/40" style={{ height: `${SCRUB_BAR_HEIGHT}px` }}>
           <div className="w-16 shrink-0 border-r" />
-          <div
-            ref={scrollbarTrackRef}
-            className="relative flex-1 overflow-hidden select-none px-1"
-          >
+          <div ref={scrollbarTrackRef} className="relative flex-1 overflow-hidden select-none px-1">
             <div
               className="absolute top-1 bottom-1 bg-foreground/10 hover:bg-foreground/15 transition-colors group rounded-full"
               style={{ width: `${thumbWidth}px`, left: `${thumbLeft}px` }}

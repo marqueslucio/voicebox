@@ -4,9 +4,22 @@ import json
 import logging
 import uuid
 
+import soundfile as sf
+
 from .. import config
 
 logger = logging.getLogger(__name__)
+
+
+def _stored_audio_duration(path: str) -> float | None:
+    resolved = config.resolve_storage_path(path)
+    if resolved is None or not resolved.exists():
+        return None
+    try:
+        info = sf.info(str(resolved))
+        return info.frames / info.samplerate if info.samplerate else None
+    except Exception:
+        return None
 
 
 def backfill_generation_versions(SessionLocal, Generation, GenerationVersion) -> None:
@@ -34,13 +47,19 @@ def backfill_generation_versions(SessionLocal, Generation, GenerationVersion) ->
                 generation_id=gen.id,
                 label="clean",
                 audio_path=gen.audio_path,
+                duration=_stored_audio_duration(gen.audio_path),
                 effects_chain=None,
                 is_default=True,
             )
             db.add(version)
             count += 1
 
-        if count > 0:
+        for version in db.query(GenerationVersion).filter(GenerationVersion.duration.is_(None)).all():
+            duration = _stored_audio_duration(version.audio_path)
+            if duration is not None:
+                version.duration = duration
+
+        if count > 0 or db.dirty:
             db.commit()
             logger.info("Backfilled %d generation version entries", count)
     finally:

@@ -36,6 +36,7 @@ import { useStoryPlayback } from '@/lib/hooks/useStoryPlayback';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useStoryStore } from '@/stores/storyStore';
 import { SortableStoryChatItem } from './StoryChatItem';
+import { StoryVoiceSettings } from './StoryVoiceSettings';
 
 export function StoryContent() {
   const { t } = useTranslation();
@@ -122,10 +123,11 @@ export function StoryContent() {
     }
     const playingItem = sortedItems.find((item) => {
       const itemStart = item.start_time_ms;
-      const itemEnd = item.start_time_ms + item.duration * 1000;
+      const itemEnd =
+        item.start_time_ms + item.duration * 1000 - item.trim_start_ms - item.trim_end_ms;
       return currentTimeMs >= itemStart && currentTimeMs < itemEnd;
     });
-    return playingItem?.generation_id ?? null;
+    return playingItem?.id ?? null;
   }, [isPlaying, playbackStoryId, story?.id, sortedItems, currentTimeMs]);
 
   // Auto-scroll to the currently playing item
@@ -150,7 +152,7 @@ export function StoryContent() {
 
   const handleRegenerate = async (generationId: string) => {
     try {
-      await apiClient.regenerateGeneration(generationId);
+      await apiClient.regenerateGeneration(generationId, story?.id);
       addPendingGeneration(generationId);
     } catch (error) {
       toast({
@@ -181,36 +183,32 @@ export function StoryContent() {
     );
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
+  const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
 
-    if (!story || !over || active.id === over.id) return;
+    if (!story || !over || active.id === over.id || reorderItems.isPending) return;
 
-    const oldIndex = sortedItems.findIndex((item) => item.generation_id === active.id);
-    const newIndex = sortedItems.findIndex((item) => item.generation_id === over.id);
+    const oldIndex = sortedItems.findIndex((item) => item.id === active.id);
+    const newIndex = sortedItems.findIndex((item) => item.id === over.id);
 
     if (oldIndex === -1 || newIndex === -1) return;
 
     // Calculate the new order
     const newOrder = arrayMove(sortedItems, oldIndex, newIndex);
-    const generationIds = newOrder.map((item) => item.generation_id);
+    const itemIds = newOrder.map((item) => item.id);
 
-    // Send reorder request to backend
-    reorderItems.mutate(
-      {
+    try {
+      await reorderItems.mutateAsync({
         storyId: story.id,
-        data: { generation_ids: generationIds },
-      },
-      {
-        onError: (error) => {
-          toast({
-            title: t('storyContent.toast.reorderFailed'),
-            description: error.message,
-            variant: 'destructive',
-          });
-        },
-      },
-    );
+        data: { item_ids: itemIds },
+      });
+    } catch (error) {
+      toast({
+        title: t('storyContent.toast.reorderFailed'),
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleExportAudio = () => {
@@ -394,6 +392,7 @@ export function StoryContent() {
               </motion.div>
             )}
           </AnimatePresence>
+          <StoryVoiceSettings story={story} />
           <Popover open={isAddOpen} onOpenChange={setIsAddOpen}>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm">
@@ -477,7 +476,7 @@ export function StoryContent() {
             onDragEnd={handleDragEnd}
           >
             <SortableContext
-              items={sortedItems.map((item) => item.generation_id)}
+              items={sortedItems.map((item) => item.id)}
               strategy={verticalListSortingStrategy}
             >
               <div className="space-y-3">
@@ -486,9 +485,9 @@ export function StoryContent() {
                     key={item.id}
                     ref={(el) => {
                       if (el) {
-                        itemRefsMap.current.set(item.generation_id, el);
+                        itemRefsMap.current.set(item.id, el);
                       } else {
-                        itemRefsMap.current.delete(item.generation_id);
+                        itemRefsMap.current.delete(item.id);
                       }
                     }}
                   >
@@ -504,6 +503,7 @@ export function StoryContent() {
                       }
                       currentTimeMs={currentTimeMs}
                       isPlaying={isPlaying && playbackStoryId === story.id}
+                      disabled={reorderItems.isPending}
                     />
                   </div>
                 ))}
