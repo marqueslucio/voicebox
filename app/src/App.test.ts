@@ -51,3 +51,12 @@ test('refetches failed startup queries when the backend becomes ready', async ()
   expect(calls).toBe(2);
   queryClient.removeQueries({ queryKey });
 });
+
+test('web and native bootstraps provide the shared query client', async () => {
+  for (const entrypoint of ['../../web/src/main.tsx', '../../tauri/src/main.tsx']) {
+    const source = await Bun.file(new URL(entrypoint, import.meta.url)).text();
+    expect(source).toContain('QueryClientProvider client={queryClient}');
+    expect(source).toMatch(/import \{ queryClient \} from ['"][^'"]+queryClient['"]/);
+    expect(source).not.toContain('new QueryClient(');
+  }
+});
