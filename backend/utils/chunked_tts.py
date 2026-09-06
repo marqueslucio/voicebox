@@ -214,6 +214,7 @@ async def generate_chunked(
     crossfade_ms: int = 50,
     trim_fn=None,
     runaway_detector=None,
+    temperature: float | None = None,
 ) -> Tuple[np.ndarray, int]:
     """Generate audio with automatic chunking for long text.
 
@@ -255,12 +256,14 @@ async def generate_chunked(
         chunk_seed: int | None,
         retry_depth: int = 0,
     ) -> tuple[np.ndarray, int]:
+        generate_kwargs = {"temperature": temperature} if temperature is not None else {}
         chunk_audio, chunk_sr = await backend.generate(
             chunk_text,
             voice_prompt,
             language,
             chunk_seed,
             instruct,
+            **generate_kwargs,
         )
 
         if runaway_detector is not None and runaway_detector(chunk_audio, chunk_sr):

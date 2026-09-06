@@ -43,6 +43,7 @@ async def run_generation(
     crossfade_ms: Optional[int] = None,
     version_id: Optional[str] = None,
     speed: float = 1.0,
+    temperature: Optional[float] = None,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -86,6 +87,7 @@ async def run_generation(
             instruct=instruct,
             trim_fn=trim_fn,
             runaway_detector=runaway_detector,
+            temperature=temperature if engine == "qwen" else None,
         )
         if max_chunk_chars is not None:
             gen_kwargs["max_chunk_chars"] = max_chunk_chars

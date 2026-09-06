@@ -113,6 +113,7 @@ class GenerationRequest(BaseModel):
     seed: Optional[int] = Field(None, ge=0)
     model_size: Optional[str] = Field(default="1.7B", pattern="^(1\\.7B|0\\.6B|1B|3B)$")
     instruct: Optional[str] = Field(None, max_length=500)
+    temperature: Optional[float] = Field(None, ge=0.3, le=1.2, allow_inf_nan=False)
     engine: Optional[str] = Field(default="qwen", pattern="^(qwen|qwen_custom_voice|luxtts|chatterbox|chatterbox_turbo|tada|kokoro)$")
     personality: bool = Field(
         default=False,
@@ -141,6 +142,7 @@ class GenerationResponse(BaseModel):
     duration: Optional[float] = None
     seed: Optional[int] = None
     instruct: Optional[str] = None
+    temperature: Optional[float] = None
     engine: Optional[str] = "qwen"
     model_size: Optional[str] = None
     status: str = "completed"
@@ -177,6 +179,7 @@ class HistoryResponse(BaseModel):
     duration: Optional[float] = None
     seed: Optional[int] = None
     instruct: Optional[str] = None
+    temperature: Optional[float] = None
     engine: Optional[str] = "qwen"
     model_size: Optional[str] = None
     status: str = "completed"

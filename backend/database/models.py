@@ -72,6 +72,7 @@ class Generation(Base):
     duration = Column(Float, nullable=True)
     seed = Column(Integer)
     instruct = Column(Text)
+    temperature = Column(Float, nullable=True)
     engine = Column(String, default="qwen")
     model_size = Column(String, nullable=True)
     status = Column(String, default="completed")

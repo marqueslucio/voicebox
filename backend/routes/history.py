@@ -97,6 +97,7 @@ async def get_generation(
         duration=gen.duration,
         seed=gen.seed,
         instruct=gen.instruct,
+        temperature=gen.temperature,
         engine=gen.engine or "qwen",
         model_size=gen.model_size,
         status=gen.status or "completed",

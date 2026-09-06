@@ -10,7 +10,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..services import history, personality, profiles, tts
 from ..database import (
     Generation as DBGeneration,
     Story as DBStory,
@@ -18,6 +17,7 @@ from ..database import (
     VoiceProfile as DBVoiceProfile,
     get_db,
 )
+from ..services import history, personality, profiles, settings, tts
 from ..services.generation import run_generation
 from ..services.task_queue import cancel_generation as cancel_generation_job, enqueue_generation
 from ..utils.audio import load_audio
@@ -112,6 +112,7 @@ async def _resolve_request_context(data: models.GenerationRequest, db: Session) 
         "instruct": _delivery_instruction(settings) if settings else data.instruct,
         "speed": settings.speed if settings else 1.0,
         "snapshot": settings.model_dump() if settings else None,
+        "temperature": data.temperature if engine == "qwen" else None,
     }
 
 
@@ -131,9 +132,18 @@ async def generate_speech(
     source = "manual"
     if data.personality and getattr(profile, "personality", None):
         try:
-            llm_result = await personality.rewrite_as_profile(profile.personality, data.text)
+            capture_settings = settings.get_capture_settings(db)
+            llm_result = await personality.rewrite_as_profile(
+                profile.personality,
+                data.text,
+                model_size=capture_settings.llm_model,
+                language=context["language"],
+            )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            logger.exception("Personality rewrite failed for profile %s", context["profile_id"])
+            raise HTTPException(status_code=500, detail="Personality rewrite failed") from e
         text = llm_result.text.strip()
         if not text:
             raise HTTPException(status_code=500, detail="LLM produced empty output; nothing to speak.")
@@ -154,6 +164,7 @@ async def generate_speech(
         model_size=context["model_size"],
         source=source,
         delivery_settings=context["snapshot"],
+        temperature=context["temperature"],
     )
 
     task_manager.start_generation(
@@ -192,6 +203,7 @@ async def generate_speech(
             max_chunk_chars=data.max_chunk_chars,
             crossfade_ms=data.crossfade_ms,
             speed=context["speed"],
+            temperature=context["temperature"],
         )
     )
 
@@ -247,6 +259,7 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
             instruct=_delivery_instruction(settings) if settings else gen.instruct,
             mode="retry",
             speed=settings.speed if settings else 1.0,
+            temperature=gen.temperature,
         )
     )
 
@@ -335,6 +348,7 @@ async def regenerate_generation(
             mode="regenerate",
             version_id=version_id,
             speed=settings.speed if settings else 1.0,
+            temperature=gen.temperature,
         )
     )
 
@@ -475,6 +489,7 @@ async def stream_speech(
         instruct=context["instruct"],
         max_chunk_chars=data.max_chunk_chars,
         crossfade_ms=data.crossfade_ms,
+        temperature=context["temperature"],
         trim_fn=trim_fn,
         runaway_detector=runaway_detector,
     )

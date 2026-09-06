@@ -30,6 +30,7 @@ const generationSchema = z.object({
     ])
     .optional(),
   personality: z.boolean().optional(),
+  temperature: z.number().min(0.3).max(1.2),
 });
 
 export type GenerationFormValues = z.infer<typeof generationSchema>;
@@ -68,6 +69,7 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
       instruct: '',
       engine: (selectedEngine as GenerationFormValues['engine']) || 'qwen',
       personality: false,
+      temperature: useUIStore.getState().qwenTemperature,
       ...options.defaultValues,
     },
   });
@@ -155,6 +157,7 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
         engine,
         instruct: supportsInstruct ? data.instruct || undefined : undefined,
         personality: data.personality || undefined,
+        temperature: engine === 'qwen' ? data.temperature : undefined,
         max_chunk_chars: maxChunkChars,
         crossfade_ms: crossfadeMs,
         normalize: normalizeAudio,
@@ -165,15 +168,18 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
       addPendingGeneration(result.id);
 
       // Reset form immediately — user can start typing again
-      form.reset({
-        text: '',
-        language: data.language,
-        seed: undefined,
-        modelSize: data.modelSize,
-        instruct: '',
-        engine: data.engine,
-        personality: data.personality,
-      });
+      if (form.getValues('text') === data.text) {
+        form.reset({
+          text: '',
+          language: data.language,
+          seed: undefined,
+          modelSize: data.modelSize,
+          instruct: '',
+          engine: data.engine,
+          personality: data.personality,
+          temperature: data.temperature,
+        });
+      }
       options.onSuccess?.(result.id);
     } catch (error) {
       toast({

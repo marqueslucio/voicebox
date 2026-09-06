@@ -5,6 +5,7 @@ MLX backend implementation for TTS and STT using mlx-audio.
 from typing import Optional, List, Tuple
 import asyncio
 import logging
+from functools import wraps
 import numpy as np
 from pathlib import Path
 
@@ -20,6 +21,21 @@ ensure_original_qwen_config_cached()
 from . import TTSBackend, STTBackend, LANGUAGE_CODE_TO_NAME, WHISPER_HF_REPOS
 from .base import is_model_cached, combine_voice_prompts as _combine_voice_prompts, model_load_progress
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
+
+
+
+def _use_recent_repetition_context(model) -> None:
+    """Backport mlx-audio #914 without upgrading unrelated engines."""
+    # ponytail: adapter for mlx-audio 0.4.1; remove after a compatible upgrade
+    # includes https://github.com/Blaizzy/mlx-audio/pull/914 (64 recent tokens).
+    original = model._sample_token
+
+    @wraps(original)
+    def sample_recent(*args, generated_tokens=None, **kwargs):
+        recent = generated_tokens[-64:] if generated_tokens else generated_tokens
+        return original(*args, generated_tokens=recent, **kwargs)
+
+    model._sample_token = sample_recent
 
 
 class MLXTTSBackend:
@@ -99,6 +115,7 @@ class MLXTTSBackend:
             logger.info("Loading MLX TTS model %s...", model_size)
 
             self.model = load(model_path)
+            _use_recent_repetition_context(self.model)
 
         self._current_model_size = model_size
         self.model_size = model_size
@@ -173,6 +190,7 @@ class MLXTTSBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        temperature: float | None = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text using voice prompt.
@@ -209,45 +227,25 @@ class MLXTTSBackend:
             ref_audio = voice_prompt.get("ref_audio") or voice_prompt.get("ref_audio_path")
             ref_text = voice_prompt.get("ref_text", "")
 
-            # Validate that the audio file exists
-            if ref_audio and not Path(ref_audio).exists():
-                logger.warning("Audio file not found: %s", ref_audio)
-                logger.warning("This may be due to a cached voice prompt referencing a deleted temp file.")
-                logger.warning("Regenerating without voice prompt.")
-                ref_audio = None
+            if not ref_audio:
+                raise ValueError("Qwen voice cloning requires reference audio")
+            if not Path(ref_audio).exists():
+                raise FileNotFoundError(f"Qwen reference audio not found: {ref_audio}")
 
             # Inference runs with the process's default HF_HUB_OFFLINE
             # state. Forcing offline here (previously used to avoid lazy
             # mlx_audio lookups hanging when the network drops mid-inference,
             # issue #462) regressed online users because libraries make
             # legitimate metadata calls during generation.
+            generate_kwargs = dict(ref_audio=ref_audio, ref_text=ref_text, lang_code=lang)
+            if temperature is not None:
+                generate_kwargs["temperature"] = temperature
             try:
-                if ref_audio:
-                    # Check if generate accepts ref_audio parameter
-                    import inspect
-
-                    sig = inspect.signature(self.model.generate)
-                    if "ref_audio" in sig.parameters:
-                        # Generate with voice cloning
-                        for result in self.model.generate(text, ref_audio=ref_audio, ref_text=ref_text, lang_code=lang):
-                            audio_chunks.append(np.array(result.audio))
-                            sample_rate = result.sample_rate
-                    else:
-                        # Fallback: generate without voice cloning
-                        for result in self.model.generate(text, lang_code=lang):
-                            audio_chunks.append(np.array(result.audio))
-                            sample_rate = result.sample_rate
-                else:
-                    # No voice prompt, generate normally
-                    for result in self.model.generate(text, lang_code=lang):
-                        audio_chunks.append(np.array(result.audio))
-                        sample_rate = result.sample_rate
-            except Exception as e:
-                # If voice cloning fails, try without it
-                logger.warning("Voice cloning failed, generating without voice prompt: %s", e)
-                for result in self.model.generate(text, lang_code=lang):
+                for result in self.model.generate(text, **generate_kwargs):
                     audio_chunks.append(np.array(result.audio))
                     sample_rate = result.sample_rate
+            except Exception as exc:
+                raise RuntimeError("Qwen voice cloning failed") from exc
 
             # Concatenate all chunks
             if audio_chunks:

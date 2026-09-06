@@ -69,6 +69,7 @@ async def create_generation(
     model_size: Optional[str] = None,
     source: str = "manual",
     delivery_settings: Optional[dict] = None,
+    temperature: Optional[float] = None,
 ) -> GenerationResponse:
     """
     Create a new generation history entry.
@@ -108,6 +109,7 @@ async def create_generation(
         status=status,
         source=source,
         delivery_settings=delivery_settings,
+        temperature=temperature,
         created_at=datetime.utcnow(),
     )
 
@@ -223,6 +225,7 @@ async def list_generations(
             duration=generation.duration,
             seed=generation.seed,
             instruct=generation.instruct,
+            temperature=generation.temperature,
             engine=generation.engine or "qwen",
             model_size=generation.model_size,
             status=generation.status or "completed",

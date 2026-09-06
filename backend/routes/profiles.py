@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from .. import config, models
 from ..app import safe_content_disposition
 from ..database import VoiceProfile as DBVoiceProfile, get_db
-from ..services import channels, export_import, personality, profiles
+from ..services import channels, export_import, personality, profiles, settings
 from ..services.profiles import _profile_to_response
 
 logger = logging.getLogger(__name__)
@@ -384,9 +384,15 @@ async def compose_in_character(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     try:
-        result = await personality.compose_as_profile(profile.personality)
+        capture_settings = settings.get_capture_settings(db)
+        result = await personality.compose_as_profile(
+            profile.personality,
+            model_size=capture_settings.llm_model,
+            language=profile.language,
+        )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return models.PersonalityTextResponse(
-        text=result.text, model_size=result.model_size
-    )
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Personality compose failed for profile %s", profile_id)
+        raise HTTPException(status_code=500, detail="Personality compose failed") from e
+    return models.PersonalityTextResponse(text=result.text, model_size=result.model_size)

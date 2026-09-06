@@ -206,6 +206,7 @@ class PyTorchTTSBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        temperature: float | None = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text using voice prompt.
@@ -231,11 +232,18 @@ class PyTorchTTSBackend:
 
             # See _create_prompt_sync comment — inference runs with the
             # process's default HF_HUB_OFFLINE state (issue #462).
+            generate_kwargs = {}
+            if temperature is not None:
+                generate_kwargs.update(
+                    temperature=temperature,
+                    subtalker_temperature=temperature,
+                )
             wavs, sample_rate = self.model.generate_voice_clone(
                 text=text,
                 voice_clone_prompt=voice_prompt,
                 language=LANGUAGE_CODE_TO_NAME.get(language, "auto"),
                 instruct=instruct,
+                **generate_kwargs,
             )
             return wavs[0], sample_rate
 

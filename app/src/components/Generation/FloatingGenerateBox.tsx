@@ -64,9 +64,17 @@ export function FloatingGenerateBox({
   const { toast } = useToast();
 
   const composeMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedProfileId) throw new Error('No profile selected');
-      return apiClient.composeWithPersonality(selectedProfileId);
+    mutationFn: ({ profileId }: { profileId: string; originalText: string }) =>
+      apiClient.composeWithPersonality(profileId),
+    onSuccess: (result, { profileId, originalText }) => {
+      if (
+        useUIStore.getState().selectedProfileId !== profileId ||
+        form.getValues('text') !== originalText
+      )
+        return;
+      form.setValue('text', result.text, { shouldDirty: true, shouldValidate: true });
+      form.setValue('personality', false);
+      setIsExpanded(true);
     },
     onError: (err: Error) => {
       toast({
@@ -418,11 +426,13 @@ export function FloatingGenerateBox({
                           type="button"
                           variant="ghost"
                           size="icon"
-                          disabled={composeMutation.isPending || !selectedProfileId}
-                          onClick={async () => {
-                            const result = await composeMutation.mutateAsync();
-                            form.setValue('text', result.text, { shouldDirty: true });
-                            setIsExpanded(true);
+                          disabled={composeMutation.isPending || isPending || !selectedProfileId}
+                          onClick={() => {
+                            if (selectedProfileId)
+                              composeMutation.mutate({
+                                profileId: selectedProfileId,
+                                originalText: form.getValues('text'),
+                              });
                           }}
                           className="h-10 w-10 rounded-full bg-card border border-border hover:bg-background/50 transition-all duration-200"
                           aria-label={t('generation.compose.ariaLabel')}
@@ -535,7 +545,7 @@ export function FloatingGenerateBox({
                 <div className="group relative">
                   <Button
                     type="submit"
-                    disabled={isPending || !selectedProfileId}
+                    disabled={isPending || composeMutation.isPending || !selectedProfileId}
                     className="h-10 w-10 rounded-full bg-accent hover:bg-accent/90 hover:scale-105 text-accent-foreground shadow-lg hover:shadow-accent/50 transition-all duration-200"
                     size="icon"
                     aria-label={
@@ -562,6 +572,52 @@ export function FloatingGenerateBox({
                 </div>
               </div>
             </div>
+
+            {isExpanded && form.watch('engine') === 'qwen' && (
+              <div className="mt-3 border-t border-border pt-3 space-y-2">
+                <FormField
+                  control={form.control}
+                  name="temperature"
+                  render={({ field }) => (
+                    <FormItem>
+                      <label htmlFor="qwen-variation" className="flex justify-between text-sm">
+                        <span>{t('generation.delivery.variation')}</span>
+                        <span>{Math.round(((field.value - 0.3) / 0.9) * 100)}%</span>
+                      </label>
+                      <FormControl>
+                        <input
+                          id="qwen-variation"
+                          type="range"
+                          min="0.3"
+                          max="1.2"
+                          step="0.01"
+                          className="w-full h-6 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                          value={field.value}
+                          aria-describedby="qwen-delivery-help"
+                          onChange={(event) => {
+                            const value = Number(event.target.value);
+                            field.onChange(value);
+                            useUIStore.getState().setQwenTemperature(value);
+                          }}
+                        />
+                      </FormControl>
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>{t('generation.delivery.stable')}</span>
+                        <span>{t('generation.delivery.varied')}</span>
+                      </div>
+                    </FormItem>
+                  )}
+                />
+                <p id="qwen-delivery-help" className="text-xs text-muted-foreground">
+                  {t('generation.delivery.help')}
+                </p>
+              </div>
+            )}
+            {composeMutation.isPending && (
+              <p role="status" className="mt-2 text-sm text-muted-foreground">
+                {t('generation.compose.pending')}
+              </p>
+            )}
 
             {/* Additive instruct textarea — shown below main text when toggle is on and engine supports it */}
             <AnimatePresence>

@@ -21,9 +21,9 @@ ideas.
 
 from dataclasses import dataclass
 
+from ..backends import LANGUAGE_CODE_TO_NAME
 from . import llm as llm_service
 from .refinement import collapse_repetitive_artifacts
-
 
 # Shared rules block embedded in every mode-specific system prompt. Kept
 # short because small LLMs (0.6B) degrade when the system prompt is long,
@@ -51,14 +51,12 @@ class PersonalityResult:
     model_size: str
 
 
-def _build_system_prompt(personality: str, task: str) -> str:
-    return (
-        _CHARACTER_FRAMING
-        + "\n\nCharacter description:\n"
-        + personality.strip()
-        + "\n\n"
-        + task
-    )
+def _build_system_prompt(personality: str, task: str, language: str | None) -> str:
+    language_rule = ""
+    if language:
+        language_name = LANGUAGE_CODE_TO_NAME.get(language, language)
+        language_rule = f"\n- Write only in {language_name}."
+    return _CHARACTER_FRAMING + language_rule + "\n\nCharacter description:\n" + personality.strip() + "\n\n" + task
 
 
 def _require_personality(personality: str | None) -> str:
@@ -72,6 +70,7 @@ def _require_personality(personality: str | None) -> str:
 async def compose_as_profile(
     personality: str | None,
     model_size: str | None = None,
+    language: str | None = None,
 ) -> PersonalityResult:
     """Produce a fresh utterance in the character's voice.
 
@@ -84,7 +83,7 @@ async def compose_as_profile(
     backend = llm_service.get_llm_model()
     resolved_size = model_size or backend.model_size
 
-    system_prompt = _build_system_prompt(text, _COMPOSE_TASK)
+    system_prompt = _build_system_prompt(text, _COMPOSE_TASK, language)
     output = await backend.generate(
         prompt="Speak.",
         system=system_prompt,
@@ -99,6 +98,7 @@ async def rewrite_as_profile(
     personality: str | None,
     user_text: str,
     model_size: str | None = None,
+    language: str | None = None,
 ) -> PersonalityResult:
     """Restate the user's text in the character's voice, ideas intact."""
     character = _require_personality(personality)
@@ -109,7 +109,7 @@ async def rewrite_as_profile(
     backend = llm_service.get_llm_model()
     resolved_size = model_size or backend.model_size
 
-    system_prompt = _build_system_prompt(character, _REWRITE_TASK)
+    system_prompt = _build_system_prompt(character, _REWRITE_TASK, language)
     output = await backend.generate(
         prompt=cleaned,
         system=system_prompt,

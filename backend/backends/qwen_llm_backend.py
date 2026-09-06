@@ -9,14 +9,14 @@ and STT engines.
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from . import LLMBackend, DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE
+from . import DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE
 from .base import (
-    is_model_cached,
-    get_torch_device,
     empty_device_cache,
-    manual_seed,
+    get_torch_device,
+    is_model_cached,
     model_load_progress,
 )
 
@@ -141,9 +141,7 @@ class PyTorchQwenLLMBackend:
         examples: Optional[list[tuple[str, str]]] = None,
     ) -> str:
         await self.load_model(model_size)
-        return await asyncio.to_thread(
-            self._generate_sync, prompt, system, max_tokens, temperature, examples
-        )
+        return await asyncio.to_thread(self._generate_sync, prompt, system, max_tokens, temperature, examples)
 
     def _generate_sync(
         self,
@@ -190,6 +188,7 @@ class MLXQwenLLMBackend:
         self.tokenizer = None
         self.model_size = model_size
         self._current_model_size: Optional[str] = None
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="qwen-llm-mlx")
 
     def is_loaded(self) -> bool:
         return self.model is not None
@@ -206,16 +205,15 @@ class MLXQwenLLMBackend:
         )
 
     async def load_model(self, model_size: Optional[str] = None) -> None:
-        if model_size is None:
-            model_size = self.model_size
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, self._load_model_if_needed_sync, model_size or self.model_size)
 
+    def _load_model_if_needed_sync(self, model_size: str) -> None:
         if self.model is not None and self._current_model_size == model_size:
             return
-
-        if self.model is not None and self._current_model_size != model_size:
-            self.unload_model()
-
-        await asyncio.to_thread(self._load_model_sync, model_size)
+        if self.model is not None:
+            self._unload_model_sync()
+        self._load_model_sync(model_size)
 
     def _load_model_sync(self, model_size: str) -> None:
         from mlx_lm import load as mlx_load
@@ -239,6 +237,9 @@ class MLXQwenLLMBackend:
         logger.info("Qwen3 %s (MLX) loaded successfully", model_size)
 
     def unload_model(self) -> None:
+        self._executor.submit(self._unload_model_sync).result()
+
+    def _unload_model_sync(self) -> None:
         if self.model is None:
             return
         del self.model
@@ -257,10 +258,29 @@ class MLXQwenLLMBackend:
         model_size: Optional[str] = None,
         examples: Optional[list[tuple[str, str]]] = None,
     ) -> str:
-        await self.load_model(model_size)
-        return await asyncio.to_thread(
-            self._generate_sync, prompt, system, max_tokens, temperature, examples
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._load_and_generate_sync,
+            model_size or self.model_size,
+            prompt,
+            system,
+            max_tokens,
+            temperature,
+            examples,
         )
+
+    def _load_and_generate_sync(
+        self,
+        model_size: str,
+        prompt: str,
+        system: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        examples: Optional[list[tuple[str, str]]] = None,
+    ) -> str:
+        self._load_model_if_needed_sync(model_size)
+        return self._generate_sync(prompt, system, max_tokens, temperature, examples)
 
     def _generate_sync(
         self,
