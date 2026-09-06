@@ -9,6 +9,12 @@ import { LANGUAGE_CODES, type LanguageCode } from '@/lib/constants/languages';
 import { useGeneration } from '@/lib/hooks/useGeneration';
 import { useModelDownloadToast } from '@/lib/hooks/useModelDownloadToast';
 import { useGenerationSettings } from '@/lib/hooks/useSettings';
+import {
+  DEFAULT_VOICE_VARIATION,
+  VOICE_VARIATION_MAX,
+  VOICE_VARIATION_MIN,
+  voiceVariationToTemperature,
+} from '@/lib/voiceVariation';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useUIStore } from '@/stores/uiStore';
 
@@ -30,7 +36,7 @@ const generationSchema = z.object({
     ])
     .optional(),
   personality: z.boolean().optional(),
-  temperature: z.number().min(0.3).max(1.2),
+  voiceVariation: z.number().int().min(VOICE_VARIATION_MIN).max(VOICE_VARIATION_MAX),
 });
 
 export type GenerationFormValues = z.infer<typeof generationSchema>;
@@ -69,7 +75,7 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
       instruct: '',
       engine: (selectedEngine as GenerationFormValues['engine']) || 'qwen',
       personality: false,
-      temperature: useUIStore.getState().qwenTemperature,
+      voiceVariation: DEFAULT_VOICE_VARIATION,
       ...options.defaultValues,
     },
   });
@@ -157,7 +163,8 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
         engine,
         instruct: supportsInstruct ? data.instruct || undefined : undefined,
         personality: data.personality || undefined,
-        temperature: engine === 'qwen' ? data.temperature : undefined,
+        temperature:
+          engine === 'qwen' ? voiceVariationToTemperature(data.voiceVariation) : undefined,
         max_chunk_chars: maxChunkChars,
         crossfade_ms: crossfadeMs,
         normalize: normalizeAudio,
@@ -177,7 +184,7 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
           instruct: '',
           engine: data.engine,
           personality: data.personality,
-          temperature: data.temperature,
+          voiceVariation: data.voiceVariation,
         });
       }
       options.onSuccess?.(result.id);

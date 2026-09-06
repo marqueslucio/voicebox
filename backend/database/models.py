@@ -43,6 +43,7 @@ class VoiceProfile(Base):
     # says and how, orthogonal to how it sounds (handled by the preset /
     # cloning metadata above).
     personality = Column(Text, nullable=True)
+    default_voice_variation = Column(Integer, nullable=False, default=6, server_default="6")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

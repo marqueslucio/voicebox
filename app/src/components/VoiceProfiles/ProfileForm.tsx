@@ -52,6 +52,11 @@ import {
 import { useSystemAudioCapture } from '@/lib/hooks/useSystemAudioCapture';
 import { useTranscription } from '@/lib/hooks/useTranscription';
 import { convertToWav, formatAudioDuration, getAudioDuration } from '@/lib/utils/audio';
+import {
+  DEFAULT_VOICE_VARIATION,
+  VOICE_VARIATION_MAX,
+  VOICE_VARIATION_MIN,
+} from '@/lib/voiceVariation';
 import { usePlatform } from '@/platform/PlatformContext';
 import { useServerStore } from '@/stores/serverStore';
 import { type ProfileFormDraft, useUIStore } from '@/stores/uiStore';
@@ -77,6 +82,7 @@ function makeProfileSchema(t: (key: string) => string) {
     name: z.string().min(1, t('profileForm.validation.nameRequired')).max(100),
     description: z.string().max(500).optional(),
     language: z.enum(LANGUAGE_CODES as [LanguageCode, ...LanguageCode[]]),
+    defaultVoiceVariation: z.number().int().min(VOICE_VARIATION_MIN).max(VOICE_VARIATION_MAX),
     personality: z.string().max(2000).optional(),
     sampleFile: z.instanceof(File).optional(),
     referenceText: z.string().max(1000).optional(),
@@ -101,6 +107,7 @@ type ProfileFormValues = {
   name: string;
   description?: string;
   language: LanguageCode;
+  defaultVoiceVariation: number;
   personality?: string;
   sampleFile?: File;
   referenceText?: string;
@@ -168,6 +175,7 @@ export function ProfileForm() {
       name: '',
       description: '',
       language: 'en',
+      defaultVoiceVariation: DEFAULT_VOICE_VARIATION,
       personality: '',
       sampleFile: undefined,
       referenceText: '',
@@ -334,6 +342,7 @@ export function ProfileForm() {
         name: editingProfile.name,
         description: editingProfile.description || '',
         language: editingProfile.language as LanguageCode,
+        defaultVoiceVariation: editingProfile.default_voice_variation ?? DEFAULT_VOICE_VARIATION,
         personality: editingProfile.personality || '',
         sampleFile: undefined,
         referenceText: undefined,
@@ -348,6 +357,7 @@ export function ProfileForm() {
         name: profileFormDraft.name,
         description: profileFormDraft.description,
         language: profileFormDraft.language as LanguageCode,
+        defaultVoiceVariation: profileFormDraft.defaultVoiceVariation ?? DEFAULT_VOICE_VARIATION,
         personality: profileFormDraft.personality || '',
         referenceText: profileFormDraft.referenceText,
         sampleFile: undefined,
@@ -373,6 +383,7 @@ export function ProfileForm() {
         name: '',
         description: '',
         language: 'en',
+        defaultVoiceVariation: DEFAULT_VOICE_VARIATION,
         personality: '',
         sampleFile: undefined,
         referenceText: undefined,
@@ -499,6 +510,7 @@ export function ProfileForm() {
             description: data.description,
             language: data.language,
             default_engine: defaultEngine || undefined,
+            default_voice_variation: data.defaultVoiceVariation,
             personality: data.personality?.trim() ? data.personality.trim() : undefined,
           },
         });
@@ -565,6 +577,7 @@ export function ProfileForm() {
           preset_engine: selectedPresetEngine,
           preset_voice_id: selectedPresetVoiceId,
           default_engine: selectedPresetEngine,
+          default_voice_variation: data.defaultVoiceVariation,
           personality: data.personality?.trim() ? data.personality.trim() : undefined,
         });
 
@@ -662,6 +675,7 @@ export function ProfileForm() {
           description: data.description,
           language: data.language,
           default_engine: defaultEngine || undefined,
+          default_voice_variation: data.defaultVoiceVariation,
           personality: data.personality?.trim() ? data.personality.trim() : undefined,
         });
 
@@ -765,6 +779,7 @@ export function ProfileForm() {
           name: values.name || '',
           description: values.description || '',
           language: values.language || 'en',
+          defaultVoiceVariation: values.defaultVoiceVariation ?? DEFAULT_VOICE_VARIATION,
           personality: values.personality || '',
           referenceText: values.referenceText || '',
           sampleMode,
@@ -828,6 +843,7 @@ export function ProfileForm() {
                       name: '',
                       description: '',
                       language: 'en',
+                      defaultVoiceVariation: DEFAULT_VOICE_VARIATION,
                       personality: '',
                       sampleFile: undefined,
                       referenceText: '',
@@ -1271,6 +1287,41 @@ export function ProfileForm() {
                       {t('profileForm.fields.defaultEngineHint')}
                     </p>
                   </FormItem>
+
+                  {isSampleBasedProfile && (
+                    <FormField
+                      control={form.control}
+                      name="defaultVoiceVariation"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel
+                            htmlFor="profile-default-voice-variation"
+                            className="flex justify-between"
+                          >
+                            <span>{t('generation.delivery.variation')}</span>
+                            <span>{field.value}/10</span>
+                          </FormLabel>
+                          <FormControl>
+                            <input
+                              id="profile-default-voice-variation"
+                              type="range"
+                              min={VOICE_VARIATION_MIN}
+                              max={VOICE_VARIATION_MAX}
+                              step={1}
+                              className="w-full h-6 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                              value={field.value}
+                              onChange={(event) => field.onChange(Number(event.target.value))}
+                            />
+                          </FormControl>
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>{t('generation.delivery.stable')}</span>
+                            <span>{t('generation.delivery.varied')}</span>
+                          </div>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
                   {editingProfileId && (
                     <div className="space-y-2">

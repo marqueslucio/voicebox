@@ -160,6 +160,8 @@ def _migrate_profiles(engine, inspector, tables: set[str]) -> None:
         _add_column(engine, "profiles", "default_engine VARCHAR", "default_engine")
     if "personality" not in columns:
         _add_column(engine, "profiles", "personality TEXT", "personality")
+    if "default_voice_variation" not in columns:
+        _add_column(engine, "profiles", "default_voice_variation INTEGER NOT NULL DEFAULT 6", "default_voice_variation")
 
 
 def _migrate_generations(engine, inspector, tables: set[str]) -> None:

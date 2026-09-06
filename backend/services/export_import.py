@@ -87,6 +87,7 @@ def export_profile_to_zip(profile_id: str, db: Session) -> bytes:
                 "name": profile.name,
                 "description": profile.description,
                 "language": profile.language,
+                "default_voice_variation": profile.default_voice_variation,
             },
             "has_avatar": has_avatar,
         }
@@ -173,6 +174,7 @@ async def import_profile_from_zip(file_bytes: bytes, db: Session) -> VoiceProfil
                 name=unique_name,
                 description=profile_data.get("description"),
                 language=profile_data.get("language", "en"),
+                default_voice_variation=profile_data.get("default_voice_variation", 6),
             )
             
             profile = await create_profile(profile_create, db)

@@ -22,6 +22,11 @@ import { useProfile, useProfiles } from '@/lib/hooks/useProfiles';
 import { useStory } from '@/lib/hooks/useStories';
 import { normalizeStoryDelivery } from '@/lib/story';
 import { cn } from '@/lib/utils/cn';
+import {
+  DEFAULT_VOICE_VARIATION,
+  VOICE_VARIATION_MAX,
+  VOICE_VARIATION_MIN,
+} from '@/lib/voiceVariation';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useStoryStore } from '@/stores/storyStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -48,6 +53,7 @@ export function FloatingGenerateBox({
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const variationProfileRef = useRef<string | null>(null);
   const matchRoute = useMatchRoute();
   const isStoriesRoute = !!matchRoute({ to: '/stories' });
   const selectedStoryId = useStoryStore((state) => state.selectedStoryId);
@@ -219,6 +225,17 @@ export function FloatingGenerateBox({
       form.setValue('personality', false);
     }
   }, [selectedProfile, effectPresets, form, activeStoryDelivery]);
+
+  // Apply a voice's saved default once when that voice is selected. Query refetches
+  // for the same voice must not overwrite a variation chosen for the current take.
+  useEffect(() => {
+    if (!selectedProfile || variationProfileRef.current === selectedProfile.id) return;
+    variationProfileRef.current = selectedProfile.id;
+    form.setValue(
+      'voiceVariation',
+      selectedProfile.default_voice_variation ?? DEFAULT_VOICE_VARIATION,
+    );
+  }, [selectedProfile, form]);
 
   // The server owns story-wide delivery. Mirror its saved values without
   // resetting the text field so a profile save cannot erase in-progress copy.
@@ -577,28 +594,23 @@ export function FloatingGenerateBox({
               <div className="mt-3 border-t border-border pt-3 space-y-2">
                 <FormField
                   control={form.control}
-                  name="temperature"
+                  name="voiceVariation"
                   render={({ field }) => (
                     <FormItem>
                       <label htmlFor="qwen-variation" className="flex justify-between text-sm">
                         <span>{t('generation.delivery.variation')}</span>
-                        <span>{Math.round(((field.value - 0.3) / 0.9) * 100)}%</span>
+                        <span>{field.value}/10</span>
                       </label>
                       <FormControl>
                         <input
                           id="qwen-variation"
                           type="range"
-                          min="0.3"
-                          max="1.2"
-                          step="0.01"
+                          min={VOICE_VARIATION_MIN}
+                          max={VOICE_VARIATION_MAX}
+                          step={1}
                           className="w-full h-6 accent-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
                           value={field.value}
-                          aria-describedby="qwen-delivery-help"
-                          onChange={(event) => {
-                            const value = Number(event.target.value);
-                            field.onChange(value);
-                            useUIStore.getState().setQwenTemperature(value);
-                          }}
+                          onChange={(event) => field.onChange(Number(event.target.value))}
                         />
                       </FormControl>
                       <div className="flex justify-between text-xs text-muted-foreground">
@@ -608,9 +620,6 @@ export function FloatingGenerateBox({
                     </FormItem>
                   )}
                 />
-                <p id="qwen-delivery-help" className="text-xs text-muted-foreground">
-                  {t('generation.delivery.help')}
-                </p>
               </div>
             )}
             {composeMutation.isPending && (

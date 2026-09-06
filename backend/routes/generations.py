@@ -102,6 +102,9 @@ async def _resolve_request_context(data: models.GenerationRequest, db: Session) 
     from ..backends import engine_has_model_sizes
 
     requested_model = settings.model_size if settings else data.model_size or "1.7B"
+    temperature = data.temperature
+    if engine == "qwen" and temperature is None:
+        temperature = round(0.3 + 0.105 * profile.default_voice_variation, 3)
     return {
         "profile": profile,
         "profile_id": profile_id,
@@ -112,7 +115,7 @@ async def _resolve_request_context(data: models.GenerationRequest, db: Session) 
         "instruct": _delivery_instruction(settings) if settings else data.instruct,
         "speed": settings.speed if settings else 1.0,
         "snapshot": settings.model_dump() if settings else None,
-        "temperature": data.temperature if engine == "qwen" else None,
+        "temperature": temperature if engine == "qwen" else None,
     }
 
 

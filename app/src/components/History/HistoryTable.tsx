@@ -56,6 +56,7 @@ import {
 import { resolveAudioVersionId } from '@/lib/story';
 import { cn } from '@/lib/utils/cn';
 import { formatDate, formatDuration, formatEngineName } from '@/lib/utils/format';
+import { temperatureToVoiceVariation } from '@/lib/voiceVariation';
 import { useGenerationStore } from '@/stores/generationStore';
 import { usePlayerStore } from '@/stores/playerStore';
 
@@ -484,6 +485,10 @@ export function HistoryTable() {
               const isVersionsExpanded = expandedVersionsId === gen.id;
               const isCancelling =
                 cancelGeneration.isPending && cancelGeneration.variables === gen.id;
+              const voiceVariation =
+                gen.engine === 'qwen' && typeof gen.temperature === 'number'
+                  ? temperatureToVoiceVariation(gen.temperature)
+                  : null;
               return (
                 <div
                   key={gen.id}
@@ -553,13 +558,27 @@ export function HistoryTable() {
                           </span>
                         ) : null}
                       </div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                         {isInProgress ? (
                           <span className="text-accent">
                             {gen.status === 'loading_model' ? 'Loading model...' : 'Generating...'}
                           </span>
                         ) : (
-                          formatDate(gen.created_at)
+                          <span>{formatDate(gen.created_at)}</span>
+                        )}
+                        {gen.engine === 'qwen' && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span
+                              className="truncate"
+                              title={voiceVariation ? undefined : t('history.variationNotRecorded')}
+                            >
+                              {t('history.variation')}{' '}
+                              {voiceVariation
+                                ? `${voiceVariation.approximate ? '≈' : ''}${voiceVariation.level}/10`
+                                : '—'}
+                            </span>
+                          </>
                         )}
                       </div>
                     </div>

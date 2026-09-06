@@ -26,6 +26,7 @@ class VoiceProfileCreate(BaseModel):
     design_prompt: Optional[str] = Field(None, max_length=2000)
     default_engine: Optional[str] = Field(None, max_length=50)
     personality: Optional[str] = Field(None, max_length=2000)
+    default_voice_variation: int = Field(default=6, ge=0, le=10, strict=True)
 
 
 class VoiceProfileResponse(BaseModel):
@@ -43,6 +44,7 @@ class VoiceProfileResponse(BaseModel):
     design_prompt: Optional[str] = None
     default_engine: Optional[str] = None
     personality: Optional[str] = None
+    default_voice_variation: int = 6
     generation_count: int = 0
     sample_count: int = 0
     created_at: datetime
@@ -113,7 +115,7 @@ class GenerationRequest(BaseModel):
     seed: Optional[int] = Field(None, ge=0)
     model_size: Optional[str] = Field(default="1.7B", pattern="^(1\\.7B|0\\.6B|1B|3B)$")
     instruct: Optional[str] = Field(None, max_length=500)
-    temperature: Optional[float] = Field(None, ge=0.3, le=1.2, allow_inf_nan=False)
+    temperature: Optional[float] = Field(None, ge=0.3, le=1.35, allow_inf_nan=False)
     engine: Optional[str] = Field(default="qwen", pattern="^(qwen|qwen_custom_voice|luxtts|chatterbox|chatterbox_turbo|tada|kokoro)$")
     personality: bool = Field(
         default=False,

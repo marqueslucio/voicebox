@@ -674,6 +674,8 @@
   },
   "history": {
     "empty": "No voice generations, yet…",
+    "variation": "Variation",
+    "variationNotRecorded": "Variation was not recorded for this generation",
     "actions": {
       "menu": "Actions",
       "play": "Play",
@@ -745,8 +747,7 @@
     "delivery": {
       "variation": "Voice variation",
       "stable": "More consistent",
-      "varied": "More varied",
-      "help": "Lower values make delivery more consistent; higher values add variety but can reduce voice fidelity. Qwen sets emphasis and pauses from the text and reference voice."
+      "varied": "More varied"
     },
     "persona": {
       "tooltipActive": "Rewrites your wording in character before speaking",

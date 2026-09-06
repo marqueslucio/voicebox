@@ -21,6 +21,7 @@ export interface ProfileFormDraft {
   language: string;
   personality: string;
   referenceText: string;
+  defaultVoiceVariation: number;
   sampleMode: 'upload' | 'record' | 'system';
   // Note: File objects can't be persisted, so we store metadata
   sampleFileName?: string;
@@ -29,9 +30,6 @@ export interface ProfileFormDraft {
 }
 
 interface UIStore {
-  qwenTemperature: number;
-  setQwenTemperature: (temperature: number) => void;
-
   // Sidebar
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -69,8 +67,6 @@ interface UIStore {
 export const useUIStore = create<UIStore>()(
   persist(
     (set) => ({
-      qwenTemperature: 0.9,
-      setQwenTemperature: (qwenTemperature) => set({ qwenTemperature }),
       sidebarOpen: true,
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
 
@@ -104,7 +100,6 @@ export const useUIStore = create<UIStore>()(
       name: 'voicebox-ui',
       partialize: (state) => ({
         selectedProfileId: state.selectedProfileId,
-        qwenTemperature: state.qwenTemperature,
         theme: state.theme,
       }),
       onRehydrateStorage: () => (state) => {
