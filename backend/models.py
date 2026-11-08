@@ -39,6 +39,7 @@ class CaptureResponse(BaseModel):
 
     id: str
     audio_path: str
+    audio_available: bool
     source: str
     language: Optional[str] = None
     duration_ms: Optional[int] = None
@@ -92,6 +93,8 @@ class CaptureSettingsResponse(BaseModel):
     smart_cleanup: bool = True
     self_correction: bool = True
     preserve_technical: bool = True
+    audio_retention_hours: int = Field(default=24, ge=1, le=876000, strict=True)
+    history_retention_days: int = Field(default=7, ge=1, le=36500, strict=True)
     allow_auto_paste: bool = True
     default_playback_voice_id: Optional[str] = None
     hotkey_enabled: bool = False
@@ -116,6 +119,8 @@ class CaptureSettingsUpdate(BaseModel):
     smart_cleanup: Optional[bool] = None
     self_correction: Optional[bool] = None
     preserve_technical: Optional[bool] = None
+    audio_retention_hours: Optional[int] = Field(default=None, ge=1, le=876000, strict=True)
+    history_retention_days: Optional[int] = Field(default=None, ge=1, le=36500, strict=True)
     allow_auto_paste: Optional[bool] = None
     default_playback_voice_id: Optional[str] = None
     hotkey_enabled: Optional[bool] = None

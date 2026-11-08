@@ -31,6 +31,8 @@ class CaptureSettings(Base):
     smart_cleanup = Column(Boolean, nullable=False, default=True)
     self_correction = Column(Boolean, nullable=False, default=True)
     preserve_technical = Column(Boolean, nullable=False, default=True)
+    audio_retention_hours = Column(Integer, nullable=False, default=24)
+    history_retention_days = Column(Integer, nullable=False, default=7)
     allow_auto_paste = Column(Boolean, nullable=False, default=True)
     default_playback_voice_id = Column(String, nullable=True)
     # Default OFF — opting in is what triggers the macOS Input Monitoring TCC

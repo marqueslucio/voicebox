@@ -22,6 +22,7 @@ from ..database import Capture as DBCapture
 from ..models import CaptureResponse, RefinementFlagsModel
 from ..utils.audio import load_audio
 from .transcript_cleanup import collapse_repetitive_artifacts
+from .retention import audio_available
 from .transcribe import get_whisper_model
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def _to_response(row: DBCapture) -> CaptureResponse:
     return CaptureResponse(
         id=row.id,
         audio_path=row.audio_path,
+        audio_available=audio_available(row.audio_path),
         source=row.source,
         language=row.language,
         duration_ms=row.duration_ms,

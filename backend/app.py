@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__, database
 from .routes import register_routers
-from .services import transcribe
+from .services import retention, transcribe
 from .utils.progress import get_progress_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -22,10 +22,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     database.init_db()
     get_progress_manager()._set_main_loop(asyncio.get_running_loop())
+    await asyncio.to_thread(retention.run_sweep)
+    stop = asyncio.Event()
+    task = asyncio.create_task(retention.periodic_sweep(stop))
     logger.info("Voicebox v%s ready", __version__)
     try:
         yield
     finally:
+        stop.set()
+        await task
         transcribe.unload_whisper_model()
 
 
