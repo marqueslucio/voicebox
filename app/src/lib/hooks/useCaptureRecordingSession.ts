@@ -3,11 +3,7 @@ import { emit as tauriEmit } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PillState } from '@/components/CapturePill/CapturePill';
 import { apiClient } from '@/lib/api/client';
-import type {
-  CaptureListResponse,
-  CaptureResponse,
-  CaptureSource,
-} from '@/lib/api/types';
+import type { CaptureListResponse, CaptureResponse, CaptureSource } from '@/lib/api/types';
 import { useAudioRecording } from '@/lib/hooks/useAudioRecording';
 
 /**
@@ -24,12 +20,6 @@ import { useAudioRecording } from '@/lib/hooks/useAudioRecording';
  */
 function broadcastCreated(capture: CaptureResponse) {
   tauriEmit('capture:created', { capture }).catch(() => {
-    /* not running inside Tauri; nothing to sync to */
-  });
-}
-
-function broadcastUpdated(id: string) {
-  tauriEmit('capture:updated', { id }).catch(() => {
     /* not running inside Tauri; nothing to sync to */
   });
 }
@@ -68,11 +58,7 @@ export interface UseCaptureRecordingSessionOptions {
    * lands after the user flips the toggle still uses the value the capture
    * was created under.
    */
-  onFinalText?: (
-    text: string,
-    capture: CaptureResponse,
-    allowAutoPaste: boolean,
-  ) => void;
+  onFinalText?: (text: string, capture: CaptureResponse, allowAutoPaste: boolean) => void;
 }
 
 export interface UseCaptureRecordingSessionResult {
@@ -80,25 +66,22 @@ export interface UseCaptureRecordingSessionResult {
   pillElapsedMs: number;
   errorMessage: string | null;
   isRecording: boolean;
-  /** A capture is on the wire (transcribing or refining). Starting a new
+  /** A capture is on the wire (transcribing). Starting a new
    *  recording is refused while this holds — see startRecording. */
   isBusy: boolean;
   isUploading: boolean;
-  isRefining: boolean;
   /** One-shot mic warm-up — see useAudioRecording.prewarm. */
   prewarmMic: () => void;
   startRecording: () => void;
   stopRecording: () => void;
   toggleRecording: () => void;
-  /** Abandon the capture currently being transcribed or refined. */
+  /** Abandon the capture currently being transcribed. */
   cancelCapture: () => void;
   dismissError: () => void;
-  uploadFile: (file: File, source: CaptureSource) => void;
-  refine: (captureId: string) => void;
 }
 
 /**
- * Owns the full record → transcribe → refine → rest lifecycle behind the
+ * Owns the full record → transcribe → rest lifecycle behind the
  * capture pill. The pill component and the Dictate/Stop button are the only
  * consumers; everything else (cache seeding, error toasts, settings reads) is
  * internal so the hook can be reused from a floating Tauri window without the
@@ -108,12 +91,6 @@ export function useCaptureRecordingSession(
   options: UseCaptureRecordingSessionOptions = {},
 ): UseCaptureRecordingSessionResult {
   const queryClient = useQueryClient();
-  // Every capture setting is resolved server-side. ``stt_model``,
-  // ``llm_model`` and refine flags are read from the capture_settings table
-  // inside POST /captures and /captures/*/refine, and ``auto_refine`` comes
-  // back on the create response so the client decides whether to chain a
-  // refine call using a value that can't go stale across sibling webviews.
-
   const [pillState, setPillState] = useState<CapturePillState>('hidden');
   const [frozenElapsedMs, setFrozenElapsedMs] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -130,13 +107,8 @@ export function useCaptureRecordingSession(
   const onFinalTextRef = useRef(options.onFinalText);
   onFinalTextRef.current = options.onFinalText;
 
-  // Snapshot of ``allow_auto_paste`` from the capture-create response —
-  // held so the refine onSuccess (which only sees the plain CaptureResponse)
-  // can still pass the original setting through to onFinalText.
-  const allowAutoPasteRef = useRef<boolean>(true);
-
   // Bumped by cancelCapture. Every mutation snapshots the counter when it
-  // starts and drops its pill / paste / chained-refine work when the value
+  // starts and drops its pill / paste work when the value
   // has moved on — the request itself can't be recalled, and the backend
   // finishes transcribing either way, but a cancelled capture must never
   // reach the paste pipeline or reopen the pill.
@@ -199,26 +171,6 @@ export function useCaptureRecordingSession(
     [clearRestTimer, clearErrorTimer],
   );
 
-  const refineMutation = useMutation({
-    // Empty body — backend resolves flags and model from capture_settings.
-    mutationFn: async (captureId: string) => apiClient.refineCapture(captureId, {}),
-    onMutate: () => ({ generation: captureGenerationRef.current }),
-    onSuccess: (data, captureId, context) => {
-      queryClient.invalidateQueries({ queryKey: ['captures'] });
-      broadcastUpdated(captureId);
-      if (context.generation !== captureGenerationRef.current) return;
-      if (pillStateRef.current === 'refining') scheduleHidePill();
-      const finalText = data.transcript_refined ?? data.transcript_raw;
-      if (finalText) {
-        onFinalTextRef.current?.(finalText, data, allowAutoPasteRef.current);
-      }
-    },
-    onError: (err: Error, _captureId, context) => {
-      if (context && context.generation !== captureGenerationRef.current) return;
-      showError(err.message || 'Refinement failed');
-    },
-  });
-
   const uploadMutation = useMutation({
     mutationFn: async ({ file, source }: { file: File; source: CaptureSource }) =>
       apiClient.createCapture(file, { source }),
@@ -235,19 +187,9 @@ export function useCaptureRecordingSession(
       // Cancelled while the transcription was running: the row stays in the
       // captures list, but nothing else happens with it.
       if (context.generation !== captureGenerationRef.current) return;
-      allowAutoPasteRef.current = capture.allow_auto_paste;
-      if (capture.auto_refine) {
-        setPillState('refining');
-        refineMutation.mutate(capture.id);
-      } else {
-        if (pillStateRef.current === 'transcribing') scheduleHidePill();
-        if (capture.transcript_raw) {
-          onFinalTextRef.current?.(
-            capture.transcript_raw,
-            capture,
-            capture.allow_auto_paste,
-          );
-        }
+      if (pillStateRef.current === 'transcribing') scheduleHidePill();
+      if (capture.transcript_raw) {
+        onFinalTextRef.current?.(capture.transcript_raw, capture, capture.allow_auto_paste);
       }
     },
     onError: (err: Error, _variables, context) => {
@@ -308,7 +250,7 @@ export function useCaptureRecordingSession(
     // away (no paste, no completed pill) and start over. 'starting' is in
     // the set because isRecording is still false during mic spin-up.
     const state = pillStateRef.current;
-    if (state === 'starting' || state === 'transcribing' || state === 'refining') return;
+    if (state === 'starting' || state === 'transcribing') return;
     clearRestTimer();
     // A pending error timer would otherwise hide the pill mid-recording.
     clearErrorTimer();
@@ -337,14 +279,14 @@ export function useCaptureRecordingSession(
   }, [isRecording, startRecording, stopRecording]);
 
   /**
-   * Drop the capture that's currently transcribing or refining: hide the
+   * Drop the capture that's currently transcribing: hide the
    * pill and make sure the late-arriving result neither pastes nor
    * reappears. Bound to Escape — deliberately not to the record trigger, so
    * a stray chord press can't discard a transcription.
    */
   const cancelCapture = useCallback(() => {
     const state = pillStateRef.current;
-    if (state !== 'transcribing' && state !== 'refining') return;
+    if (state !== 'transcribing') return;
     captureGenerationRef.current += 1;
     clearRestTimer();
     clearErrorTimer();
@@ -352,38 +294,20 @@ export function useCaptureRecordingSession(
     setPillState('hidden');
   }, [clearRestTimer, clearErrorTimer]);
 
-  const uploadFile = useCallback(
-    (file: File, source: CaptureSource) => {
-      uploadMutation.mutate({ file, source });
-    },
-    [uploadMutation],
-  );
-
-  const refine = useCallback(
-    (captureId: string) => {
-      refineMutation.mutate(captureId);
-    },
-    [refineMutation],
-  );
-
-  const pillElapsedMs =
-    pillState === 'recording' ? Math.round(duration * 1000) : frozenElapsedMs;
+  const pillElapsedMs = pillState === 'recording' ? Math.round(duration * 1000) : frozenElapsedMs;
 
   return {
     pillState,
     pillElapsedMs,
     errorMessage,
     isRecording,
-    isBusy: pillState === 'transcribing' || pillState === 'refining',
+    isBusy: pillState === 'transcribing',
     isUploading: uploadMutation.isPending,
-    isRefining: refineMutation.isPending,
     prewarmMic,
     startRecording,
     stopRecording,
     toggleRecording,
     cancelCapture,
     dismissError,
-    uploadFile,
-    refine,
   };
 }

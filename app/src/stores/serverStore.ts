@@ -28,18 +28,14 @@ function invalidateAllServerData() {
 }
 
 export function getDefaultServerUrl(): string {
-  const fallback = `http://127.0.0.1:${import.meta.env.VITE_VOICEBOX_SERVER_PORT || '17493'}`;
+  const fallback = `http://127.0.0.1:${import.meta.env.VITE_VOICEBOX_SERVER_PORT || '17495'}`;
 
   if (!import.meta.env.PROD || typeof window === 'undefined') {
     return fallback;
   }
 
   const { protocol, origin, hostname } = window.location;
-  if (
-    (protocol === 'http:' || protocol === 'https:') &&
-    origin &&
-    hostname !== 'tauri.localhost'
-  ) {
+  if ((protocol === 'http:' || protocol === 'https:') && origin && hostname !== 'tauri.localhost') {
     return origin;
   }
 
@@ -50,7 +46,7 @@ export function isLoopbackVoiceboxServerUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     return (
-      parsed.port === '17493' &&
+      parsed.port === '17495' &&
       (parsed.hostname === '127.0.0.1' ||
         parsed.hostname === 'localhost' ||
         parsed.hostname === '[::1]' ||
@@ -87,6 +83,12 @@ export const useServerStore = create<ServerStore>()(
     }),
     {
       name: 'voicebox-server',
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as Partial<ServerStore>),
+        serverUrl: getDefaultServerUrl(),
+        mode: 'local',
+      }),
     },
   ),
 );

@@ -1,19 +1,15 @@
-import { RouterProvider } from '@tanstack/react-router';
+import { DictationApp } from '@/components/DictationApp';
 import { useEffect, useRef, useState } from 'react';
 import voiceboxLogo from '@/assets/voicebox-logo.png';
 import { DictateWindow } from '@/components/DictateWindow/DictateWindow';
 import ShinyText from '@/components/ShinyText';
 import { TitleBarDragRegion } from '@/components/TitleBarDragRegion';
-import { useAutoUpdater } from '@/hooks/useAutoUpdater';
 import { useThemeSync } from '@/hooks/useThemeSync';
-import { apiClient } from '@/lib/api/client';
-import type { HealthResponse } from '@/lib/api/types';
 import { TOP_SAFE_AREA_PADDING } from '@/lib/constants/ui';
 import { useChordSync } from '@/lib/hooks/useChordSync';
 import { queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils/cn';
 import { usePlatform } from '@/platform/PlatformContext';
-import { router } from '@/router';
 import { useLogStore } from '@/stores/logStore';
 import {
   getDefaultServerUrl,
@@ -26,60 +22,12 @@ function isDictateView(): boolean {
   return new URLSearchParams(window.location.search).get('view') === 'dictate';
 }
 
-/**
- * Validate that a health response has the expected Voicebox-specific shape.
- * Prevents misidentifying an unrelated service on the same port.
- */
-function isVoiceboxHealthResponse(health: HealthResponse): boolean {
-  return (
-    health?.status === 'healthy' &&
-    typeof health.model_loaded === 'boolean' &&
-    typeof health.gpu_available === 'boolean'
-  );
-}
-
-/**
- * Check whether a startup error indicates the port is occupied by an external
- * server (which we should try to reuse via health-check polling) vs. a real
- * failure (missing sidecar, signing issue, etc.) that should surface immediately.
- */
-function isPortInUseError(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error);
-  return (
-    msg.includes('already in use') ||
-    msg.includes('port') ||
-    msg.includes('EADDRINUSE') ||
-    msg.includes('address already in use')
-  );
-}
-
 export function notifyServerReady(markReady: () => void): void {
   queryClient.invalidateQueries();
   markReady();
 }
 
-const LOADING_MESSAGES = [
-  'Warming up tensors...',
-  'Calibrating synthesizer engine...',
-  'Initializing voice models...',
-  'Loading neural networks...',
-  'Preparing audio pipelines...',
-  'Optimizing waveform generators...',
-  'Tuning frequency analyzers...',
-  'Building voice embeddings...',
-  'Configuring text-to-speech cores...',
-  'Syncing audio buffers...',
-  'Establishing model connections...',
-  'Preprocessing training data...',
-  'Validating voice samples...',
-  'Compiling inference engines...',
-  'Mapping phoneme sequences...',
-  'Aligning prosody parameters...',
-  'Activating speech synthesis...',
-  'Fine-tuning acoustic models...',
-  'Preparing voice cloning matrices...',
-  'Initializing Qwen TTS framework...',
-];
+const LOADING_MESSAGES = ['Starting local transcription…'];
 
 function App() {
   useThemeSync();
@@ -102,11 +50,9 @@ function MainApp() {
   const serverStartingRef = useRef(false);
 
   // Automatically check for app updates on startup and show toast notifications
-  useAutoUpdater({ checkOnMount: true, showToast: true });
 
   // Replay the saved chord into the Rust hotkey listener every time
   // capture_settings resolves or the user edits the chord.
-  useChordSync();
 
   // Sync stored setting to Rust on startup
   useEffect(() => {
@@ -171,7 +117,7 @@ function MainApp() {
     }
 
     serverStartingRef.current = true;
-    const isRemote = useServerStore.getState().mode === 'remote';
+    const isRemote = false;
     const customModelsDir = useServerStore.getState().customModelsDir;
     console.log(`Production mode: Starting bundled server... (remote: ${isRemote})`);
 
@@ -190,45 +136,8 @@ function MainApp() {
         serverStartingRef.current = false;
         window.__voiceboxServerStartedByApp = false;
 
-        // Only fall back to health-check polling when the error indicates the
-        // port is occupied (likely an external server). For real failures
-        // (missing sidecar, signing issues, etc.) surface the error immediately.
-        if (!isPortInUseError(error)) {
-          const msg = error instanceof Error ? error.message : String(error);
-          console.error('Real startup failure — not polling:', msg);
-          setStartupError(msg);
-          return;
-        }
-
-        // Fall back to polling: the server may already be running externally
-        // (e.g. started via python/uvicorn/Docker). Poll the health endpoint
-        // until it responds with a valid Voicebox payload, then transition to
-        // the main UI.
-        console.log('Falling back to health-check polling...');
-        const pollInterval = setInterval(async () => {
-          try {
-            const health = await apiClient.getHealth();
-            if (!isVoiceboxHealthResponse(health)) {
-              console.log('Health response is not from a Voicebox server, keep polling...');
-              return;
-            }
-            console.log('External Voicebox server detected via health check');
-            clearInterval(pollInterval);
-            notifyServerReady(() => setServerReady(true));
-          } catch {
-            // Server not ready yet, keep polling
-          }
-        }, 2000);
-
-        // Stop polling after 2 minutes and surface the failure
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          serverStartingRef.current = false;
-          setStartupError(
-            'Could not connect to a Voicebox server within 2 minutes. ' +
-              'Please check that the server is running and try again.',
-          );
-        }, 120_000);
+        const msg = error instanceof Error ? error.message : String(error);
+        setStartupError(msg);
       });
 
     // Cleanup: stop server on actual unmount (not StrictMode remount)
@@ -308,7 +217,12 @@ function MainApp() {
     );
   }
 
-  return <RouterProvider router={router} />;
+  return <ServerReadyApp />;
+}
+
+function ServerReadyApp() {
+  useChordSync();
+  return <DictationApp />;
 }
 
 export default App;

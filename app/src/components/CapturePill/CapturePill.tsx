@@ -7,32 +7,20 @@ import { cn } from '@/lib/utils/cn';
  * Pill state machine shared between the settings preview and the live
  * recording pill in the Captures tab.
  */
-export type PillState =
-  | 'starting'
-  | 'recording'
-  | 'transcribing'
-  | 'refining'
-  | 'speaking'
-  | 'completed'
-  | 'rest'
-  | 'error';
+export type PillState = 'starting' | 'recording' | 'transcribing' | 'completed' | 'rest' | 'error';
 
 const PILL_LABEL_KEYS: Record<Exclude<PillState, 'rest' | 'error'>, string> = {
   starting: 'captures.pill.starting',
   recording: 'captures.pill.recording',
   transcribing: 'captures.pill.transcribing',
-  refining: 'captures.pill.refining',
-  speaking: 'captures.pill.speaking',
   completed: 'captures.pill.completed',
 };
 
-function barModeFor(
-  state: Exclude<PillState, 'error'>,
-): 'generating' | 'playing' | 'idle' {
+function barModeFor(state: Exclude<PillState, 'error'>): 'generating' | 'playing' | 'idle' {
   // 'starting' deliberately renders the muted idle bars: the mic stream
   // isn't live yet, and showing the playing waveform would claim audio is
   // being captured while the first words could still be lost.
-  if (state === 'recording' || state === 'speaking') return 'playing';
+  if (state === 'recording') return 'playing';
   if (state === 'completed' || state === 'rest' || state === 'starting') return 'idle';
   return 'generating';
 }
@@ -74,7 +62,7 @@ function formatElapsed(ms: number): string {
 /**
  * Floating pill shown during capture. `state` drives the label, dot animation,
  * and bar motion; `elapsedMs` freezes at whatever the caller last passed in
- * (recording advances the timer, transcribing/refining hold the final value).
+ * (recording advances the timer, transcribing holds the final value).
  * The ``error`` state renders a destructive variant — a clickable pill that
  * copies its message to the clipboard on press and calls ``onDismiss``.
  */
@@ -118,24 +106,25 @@ export function CapturePill({
     </span>
   );
 
-  const stopButton = onStop && state === 'recording' ? (
-    <button
-      type="button"
-      onClick={onStop}
-      aria-label={t('captures.pill.stopAria')}
-      className="relative flex h-2 w-2 shrink-0 items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-accent/50"
-    >
-      {dot}
-    </button>
-  ) : dot;
+  const stopButton =
+    onStop && state === 'recording' ? (
+      <button
+        type="button"
+        onClick={onStop}
+        aria-label={t('captures.pill.stopAria')}
+        className="relative flex h-2 w-2 shrink-0 items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-accent/50"
+      >
+        {dot}
+      </button>
+    ) : (
+      dot
+    );
 
   // Completed gets an inset accent stroke (via box-shadow, not Tailwind's
   // ring — ring utility doesn't compose with arbitrary shadow-[…]) to mark
   // the success moment without changing the pill's dimensions.
   const completedStroke =
-    state === 'completed'
-      ? 'shadow-[inset_0_0_0_2px_hsl(var(--accent)/0.6)]'
-      : null;
+    state === 'completed' ? 'shadow-[inset_0_0_0_2px_hsl(var(--accent)/0.6)]' : null;
 
   return (
     <div
@@ -200,4 +189,3 @@ function ErrorPill({
     </button>
   );
 }
-

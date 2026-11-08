@@ -7,7 +7,7 @@ import { usePlatform } from '@/platform/PlatformContext';
 
 const READINESS_POLL_INTERVAL_MS = 5_000;
 
-export type ReadinessGate = 'stt' | 'llm' | 'input_monitoring' | 'accessibility';
+export type ReadinessGate = 'stt' | 'input_monitoring' | 'accessibility';
 
 export interface DictationReadiness {
   isLoading: boolean;
@@ -16,7 +16,6 @@ export interface DictationReadiness {
   /** Subset of gates that are NOT yet satisfied — what the checklist renders. */
   missing: ReadinessGate[];
   stt: ModelReadiness | undefined;
-  llm: ModelReadiness | undefined;
   inputMonitoring: boolean;
   accessibility: boolean;
   refetch: () => void;
@@ -67,11 +66,11 @@ export function useDictationReadiness(): DictationReadiness {
     // useSettings. refetchOnWindowFocus stays gated to the same condition.
     refetchInterval: (query) => {
       const d = query.state.data;
-      return d && d.stt.ready && d.llm.ready ? false : READINESS_POLL_INTERVAL_MS;
+      return d && d.stt.ready ? false : READINESS_POLL_INTERVAL_MS;
     },
     refetchOnWindowFocus: (query) => {
       const d = query.state.data;
-      return !(d && d.stt.ready && d.llm.ready);
+      return !(d && d.stt.ready);
     },
   });
 
@@ -80,14 +79,12 @@ export function useDictationReadiness(): DictationReadiness {
   const inputMonitoring = isTauri ? !inputMonNeeds : true;
   const accessibility = isTauri ? !a11yNeeds : true;
   const sttReady = data?.stt.ready ?? false;
-  const llmReady = data?.llm.ready ?? false;
 
   const missing: ReadinessGate[] = [];
   if (!sttReady) missing.push('stt');
-  if (!llmReady) missing.push('llm');
   if (!inputMonitoring) missing.push('input_monitoring');
   if (!accessibility) missing.push('accessibility');
-  const canRecord = sttReady && llmReady && inputMonitoring;
+  const canRecord = sttReady && inputMonitoring;
 
   return {
     isLoading,
@@ -95,7 +92,6 @@ export function useDictationReadiness(): DictationReadiness {
     allReady: missing.length === 0,
     missing,
     stt: data?.stt,
-    llm: data?.llm,
     inputMonitoring,
     accessibility,
     refetch: () => {

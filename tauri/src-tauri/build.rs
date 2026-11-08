@@ -2,31 +2,6 @@
 use std::process::Command;
 
 fn main() {
-    // Link Swift runtime libraries for screencapturekit crate
-    #[cfg(target_os = "macos")]
-    {
-        // ScreenCaptureKit does not exist on macOS 11, so weak-link it to
-        // allow the app to launch and gate usage at runtime instead.
-        println!("cargo:rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit");
-
-        // Add Swift runtime library paths to RPATH
-        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
-        println!("cargo:rustc-link-arg=-L/usr/lib/swift");
-
-        // Also try Xcode's Swift libraries
-        if let Ok(output) = Command::new("xcode-select").arg("-p").output() {
-            if output.status.success() {
-                let xcode_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let swift_lib_path = format!(
-                    "{}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx",
-                    xcode_path
-                );
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", swift_lib_path);
-                println!("cargo:rustc-link-arg=-L{}", swift_lib_path);
-            }
-        }
-    }
-
     let project_root = env!("CARGO_MANIFEST_DIR");
     let gen_dir = format!("{}/gen", project_root);
     std::fs::create_dir_all(&gen_dir).expect("Failed to create gen directory");
