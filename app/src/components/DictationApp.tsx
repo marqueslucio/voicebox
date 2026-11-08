@@ -300,7 +300,9 @@ export function DictationApp() {
                             ? 'Loaded'
                             : model.downloaded
                               ? 'Downloaded'
-                              : `${model.size_mb ?? '?'} MB`}
+                              : model.size_mb == null
+                                ? 'Not downloaded'
+                                : `${model.size_mb} MB`}
                       </p>
                     </div>
                     <div className="flex gap-2">
