@@ -42,7 +42,7 @@ codesign --force --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" \
   "$SOURCE_APP/Contents/MacOS/voicebox-server"
 codesign --force --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$SOURCE_APP"
 codesign --verify --deep --strict "$SOURCE_APP"
-if ! codesign -dv "$SOURCE_APP" 2>&1 | grep -Fxq 'TeamIdentifier=ULTQS3R2AQ'; then
+if ! codesign -dv "$SOURCE_APP" 2>&1 | grep -Fxq 'TeamIdentifier=469AG7ZM8L'; then
   echo "App must be signed with the Voicebox development team identity." >&2
   exit 1
 fi
