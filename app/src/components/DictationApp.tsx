@@ -270,11 +270,12 @@ export function DictationApp() {
                   <option value="en">English</option>
                   <option value="es">Spanish</option>
                   <option value="fr">French</option>
-                  {!['auto', 'de', 'en', 'es', 'fr', 'ja', 'zh'].includes(language) && (
+                  {!['auto', 'de', 'en', 'es', 'fr', 'ja', 'zh', 'hi'].includes(language) && (
                     <option value={language}>{language}</option>
                   )}
                   {isSTTLanguageSupported(sttModel, 'ja') && <option value="ja">Japanese</option>}
                   {isSTTLanguageSupported(sttModel, 'zh') && <option value="zh">Chinese</option>}
+                  {isSTTLanguageSupported(sttModel, 'hi') && <option value="hi">Hindi</option>}
                 </select>
               </label>
               <div className="mt-5 divide-y divide-border">
