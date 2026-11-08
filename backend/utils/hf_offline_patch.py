@@ -236,35 +236,6 @@ def patch_huggingface_hub_offline():
         logger.exception("failed to patch huggingface_hub for offline mode")
 
 
-def ensure_original_qwen_config_cached():
-    """Symlink the original Qwen repo cache to the MLX community version.
-
-    mlx_audio may try to fetch config from the original Qwen repo. If only
-    the MLX community variant is cached, create a symlink so the cache lookup
-    succeeds without a network request.
-    """
-    try:
-        from huggingface_hub import constants as hf_constants
-    except ImportError:
-        return
-
-    original_repo = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-    mlx_repo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
-
-    cache_dir = Path(hf_constants.HF_HUB_CACHE)
-    original_path = cache_dir / f"models--{original_repo.replace('/', '--')}"
-    mlx_path = cache_dir / f"models--{mlx_repo.replace('/', '--')}"
-
-    if not original_path.exists() and mlx_path.exists():
-        try:
-            original_path.parent.mkdir(parents=True, exist_ok=True)
-            original_path.symlink_to(mlx_path, target_is_directory=True)
-            logger.info("created cache symlink: %s -> %s", original_repo, mlx_repo)
-        except Exception:
-            logger.warning("could not create cache symlink for %s", original_repo, exc_info=True)
-
-
 if os.environ.get("VOICEBOX_OFFLINE_PATCH", "1") != "0":
     patch_huggingface_hub_offline()
     patch_transformers_mistral_regex()
-    ensure_original_qwen_config_cached()

@@ -8,7 +8,7 @@ original algorithm handled and the multi-word / CJK / emoji loops the
 character-level pass added.
 """
 
-from backend.services.refinement import collapse_repetitive_artifacts
+from backend.services.transcript_cleanup import collapse_repetitive_artifacts
 
 
 # ── single-word loops (word-level pass) ─────────────────────────────────

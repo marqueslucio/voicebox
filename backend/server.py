@@ -7,7 +7,6 @@ absolute imports instead of relative imports.
 
 import sys
 import os
-import re
 
 # On Windows with --noconsole (PyInstaller), sys.stdout/stderr are None.
 # They can also be broken file objects in some edge cases.
@@ -65,32 +64,12 @@ sys.stderr = _PipeSafeStream(sys.stderr)
 import multiprocessing
 multiprocessing.freeze_support()
 
-# In frozen builds, piper_phonemize's espeak-ng C library falls back to
-# /usr/share/espeak-ng-data/ which doesn't exist.  Point it at the bundled
-# data directory instead.
-if getattr(sys, 'frozen', False):
-    _meipass = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-    _espeak_data = os.path.join(_meipass, 'piper_phonemize', 'espeak-ng-data')
-    if os.path.isdir(_espeak_data):
-        os.environ.setdefault('ESPEAK_DATA_PATH', _espeak_data)
-
 # Fast path: handle --version before any heavy imports so the Rust
 # version check doesn't block for 30+ seconds loading torch etc.
 if "--version" in sys.argv:
     from backend import __version__
     print(f"voicebox-server {__version__}")
     sys.exit(0)
-
-# Detect backend variant from binary name BEFORE importing backend modules
-# so that env-var guards in app.py (e.g. HSA_OVERRIDE_GFX_VERSION) fire at import time.
-_binary_name = os.path.basename(sys.executable).lower()
-if re.search(r"voicebox-server-rocm(\.exe)?$", _binary_name):
-    os.environ["VOICEBOX_BACKEND_VARIANT"] = "rocm"
-elif re.search(r"voicebox-server-cuda(\.exe)?$", _binary_name):
-    os.environ["VOICEBOX_BACKEND_VARIANT"] = "cuda"
-else:
-    os.environ.setdefault("VOICEBOX_BACKEND_VARIANT", "cpu")
-
 
 import logging
 
@@ -287,7 +266,7 @@ if __name__ == "__main__":
             "--data-dir",
             type=str,
             default=None,
-            help="Data directory for database, profiles, and generated audio",
+            help="Data directory for capture database and audio",
         )
         parser.add_argument(
             "--parent-pid",

@@ -12,7 +12,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..database import CaptureSettings as DBCaptureSettings
-from ..database import GenerationSettings as DBGenerationSettings
 from ..utils.capture_chords import (
     default_push_to_talk_chord,
     default_toggle_to_talk_chord,
@@ -30,16 +29,6 @@ def _get_or_create_capture_row(db: Session) -> DBCaptureSettings:
             chord_push_to_talk_keys=default_push_to_talk_chord(),
             chord_toggle_to_talk_keys=default_toggle_to_talk_chord(),
         )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-    return row
-
-
-def _get_or_create_generation_row(db: Session) -> DBGenerationSettings:
-    row = db.query(DBGenerationSettings).filter(DBGenerationSettings.id == SINGLETON_ID).first()
-    if row is None:
-        row = DBGenerationSettings(id=SINGLETON_ID)
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -71,19 +60,6 @@ def get_capture_settings(db: Session) -> DBCaptureSettings:
 
 def update_capture_settings(db: Session, patch: dict[str, Any]) -> DBCaptureSettings:
     row = _get_or_create_capture_row(db)
-    _apply_patch(row, patch)
-    db.commit()
-    db.refresh(row)
-    return row
-
-
-def get_generation_settings(db: Session) -> DBGenerationSettings:
-    """Return the generation settings row, creating it with defaults if missing."""
-    return _get_or_create_generation_row(db)
-
-
-def update_generation_settings(db: Session, patch: dict[str, Any]) -> DBGenerationSettings:
-    row = _get_or_create_generation_row(db)
     _apply_patch(row, patch)
     db.commit()
     db.refresh(row)

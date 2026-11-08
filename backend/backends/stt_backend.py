@@ -58,14 +58,10 @@ class STTBackendRouter:
             self.unload_model()
             if model_size == MODEL_SIZE:
                 self._backend = ParakeetSTTBackend()
-            elif get_backend_type() == "mlx":
+            else:
                 from .mlx_backend import MLXSTTBackend
 
                 self._backend = MLXSTTBackend(model_size)
-            else:
-                from .pytorch_backend import PyTorchSTTBackend
-
-                self._backend = PyTorchSTTBackend(model_size)
             self.model_size = model_size
         return self._backend
 

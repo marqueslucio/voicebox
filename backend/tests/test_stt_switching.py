@@ -56,8 +56,8 @@ def test_switching_serializes_inference_and_unload():
     router = STTBackendRouter()
     with (
         patch("backend.backends.stt_backend.ParakeetSTTBackend", FakeBackend),
-        patch("backend.backends.stt_backend.get_backend_type", return_value="pytorch"),
-        patch("backend.backends.pytorch_backend.PyTorchSTTBackend", FakeBackend),
+        patch("backend.backends.stt_backend.get_backend_type", return_value="mlx"),
+        patch("backend.backends.mlx_backend.MLXSTTBackend", FakeBackend),
     ):
         assert asyncio.run(router.transcribe("file.wav", "de", "turbo")) == "turbo:de"
         assert asyncio.run(router.transcribe("file.wav", None, MODEL_SIZE)) == f"{MODEL_SIZE}:None"

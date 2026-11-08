@@ -3,10 +3,10 @@ STT (Speech-to-Text) module - delegates to backend abstraction layer.
 """
 
 from typing import Optional
-from ..backends import get_stt_backend, STTBackend
+from ..backends import get_stt_backend
 
 
-def get_whisper_model() -> STTBackend:
+def get_whisper_model():
     """
     Get the shared STT router (Whisper or native Parakeet).
     
