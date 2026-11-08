@@ -4,11 +4,12 @@
 //! pipeline so the focused app performs its native paste action against
 //! whatever the clipboard module has just staged.
 //!
-//! - **macOS** — Cmd down with Cmd flag, V down with Cmd flag, V up with
-//!   Cmd flag, Cmd up via `CGEventPost` at `kCGHIDEventTap`. The Cmd-down
-//!   event carries the Command flag so its `flagsChanged` representation
-//!   matches hardware — Electron/Chromium tracks modifier state from that
-//!   flag and drops the paste otherwise (see the note on the event table).
+//! - **macOS** — Cmd down (`flagsChanged`), V down, V up (both with the
+//!   Cmd flag), Cmd up (`flagsChanged`, flags cleared) via `CGEventPost`
+//!   at `kCGHIDEventTap`. The modifier transitions are typed
+//!   `flagsChanged` to match hardware — Electron/Chromium only feeds
+//!   `flagsChanged` into its tracked modifier state and drops the paste
+//!   otherwise (see the note in [`paste_events`]).
 //!   Accessibility permission is load-bearing: without it the system
 //!   swallows the events silently, so callers must gate on
 //!   [`crate::accessibility::is_trusted`].
@@ -68,6 +69,12 @@ mod ffi {
     /// `kVK_Command` (left Cmd).
     pub const KEYCODE_LEFT_CMD: CGKeyCode = 0x37;
 
+    pub type CGEventType = u32;
+
+    /// `kCGEventFlagsChanged` — the event type hardware produces for pure
+    /// modifier transitions (Cmd/Shift/Option/Ctrl press and release).
+    pub const K_CG_EVENT_FLAGS_CHANGED: CGEventType = 12;
+
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         pub fn CGEventSourceCreate(state_id: CGEventSourceStateID) -> CGEventSourceRef;
@@ -77,6 +84,7 @@ mod ffi {
             key_down: bool,
         ) -> CGEventRef;
         pub fn CGEventSetFlags(event: CGEventRef, flags: CGEventFlags);
+        pub fn CGEventSetType(event: CGEventRef, event_type: CGEventType);
         pub fn CGEventPost(tap: CGEventTapLocation, event: CGEventRef);
     }
 
@@ -84,6 +92,60 @@ mod ffi {
     extern "C" {
         pub fn CFRelease(cf: *const c_void);
     }
+}
+
+/// One event of the synthetic paste sequence. `flags_changed` marks the
+/// modifier transitions that must be posted as `kCGEventFlagsChanged`
+/// instead of keyDown/keyUp.
+#[cfg(target_os = "macos")]
+struct PasteEvent {
+    key: ffi::CGKeyCode,
+    down: bool,
+    flags: ffi::CGEventFlags,
+    flags_changed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn paste_events(v_keycode: ffi::CGKeyCode) -> [PasteEvent; 4] {
+    use ffi::*;
+
+    // The Cmd transitions must be `flagsChanged` events carrying the
+    // resulting modifier state — that is what real hardware produces for a
+    // pure modifier press, and it's the only event type Chromium/Electron
+    // feeds into its tracked modifier state. Posting Cmd as a plain
+    // keyDown (even with the Command flag set on the event) leaves that
+    // tracker showing "Command up", so the following V matches neither the
+    // Cmd+V accelerator nor plain-text insertion and Electron drops it
+    // silently. AppKit reads the V event's own flags and pastes
+    // regardless, which is why native apps (TextEdit) worked while every
+    // Electron target (Slack, VS Code, Claude, ChatGPT) silently no-op'd
+    // — verified empirically on 2026-07-30.
+    [
+        PasteEvent {
+            key: KEYCODE_LEFT_CMD,
+            down: true,
+            flags: K_CG_EVENT_FLAG_MASK_COMMAND,
+            flags_changed: true,
+        },
+        PasteEvent {
+            key: v_keycode,
+            down: true,
+            flags: K_CG_EVENT_FLAG_MASK_COMMAND,
+            flags_changed: false,
+        },
+        PasteEvent {
+            key: v_keycode,
+            down: false,
+            flags: K_CG_EVENT_FLAG_MASK_COMMAND,
+            flags_changed: false,
+        },
+        PasteEvent {
+            key: KEYCODE_LEFT_CMD,
+            down: false,
+            flags: 0,
+            flags_changed: true,
+        },
+    ]
 }
 
 /// Post the four-event Cmd+V sequence to the HID event tap.
@@ -104,23 +166,7 @@ pub fn send_paste() -> Result<(), String> {
         }
         let _source_guard = scopeguard::guard(source, |s| CFRelease(s as *const c_void));
 
-        let events = [
-            // The Cmd-down event must carry the Command flag itself. On real
-            // hardware the Cmd keyDown is a flagsChanged event whose flags
-            // already include Command; Chromium/Electron builds its tracked
-            // modifier state from that flag. Posting Cmd-down with flags = 0
-            // leaves that tracker showing "Command up", so the following V —
-            // even though its own flags carry Command — matches neither the
-            // Cmd+V accelerator (tracker says no modifier) nor plain-text
-            // insertion (event flags say Command), and Electron drops it
-            // silently. AppKit reads the V event's own flags and pastes
-            // regardless, which is why native apps worked but Electron
-            // targets (Slack, VS Code) silently no-op'd.
-            (KEYCODE_LEFT_CMD, true, K_CG_EVENT_FLAG_MASK_COMMAND),
-            (v_keycode, true, K_CG_EVENT_FLAG_MASK_COMMAND),
-            (v_keycode, false, K_CG_EVENT_FLAG_MASK_COMMAND),
-            (KEYCODE_LEFT_CMD, false, 0),
-        ];
+        let events = paste_events(v_keycode);
 
         // Build the four events up front so CFRelease happens after all posts.
         // Posting in a loop that interleaved create → post → release would
@@ -129,7 +175,7 @@ pub fn send_paste() -> Result<(), String> {
         let mut guards = Vec::with_capacity(events.len());
         let mut created = Vec::with_capacity(events.len());
 
-        for (key, down, flags) in events {
+        for PasteEvent { key, down, flags, flags_changed } in events {
             let event = CGEventCreateKeyboardEvent(source, key, down);
             if event.is_null() {
                 return Err(format!(
@@ -138,9 +184,13 @@ pub fn send_paste() -> Result<(), String> {
                 ));
             }
             let guard = scopeguard::guard(event, |e| CFRelease(e as *const c_void));
-            if flags != 0 {
-                CGEventSetFlags(event, flags);
+            if flags_changed {
+                CGEventSetType(event, K_CG_EVENT_FLAGS_CHANGED);
             }
+            // Set flags unconditionally: CGEventCreateKeyboardEvent seeds
+            // modifier-key events with its own flag bookkeeping, so the
+            // Cmd-up flagsChanged must be explicitly forced to 0.
+            CGEventSetFlags(event, flags);
             created.push(event);
             guards.push(guard);
         }
@@ -217,4 +267,31 @@ pub fn send_paste() -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn send_paste() -> Result<(), String> {
     Err("synthetic paste is not yet implemented on this platform".into())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{ffi::*, paste_events};
+
+    #[test]
+    fn cmd_transitions_are_flags_changed_events() {
+        let events = paste_events(0);
+
+        // Cmd-down: flagsChanged carrying the Command bit.
+        assert_eq!(events[0].key, KEYCODE_LEFT_CMD);
+        assert!(events[0].down);
+        assert_eq!(events[0].flags, K_CG_EVENT_FLAG_MASK_COMMAND);
+        assert!(events[0].flags_changed);
+
+        // V down/up: plain key events with the Command flag.
+        assert!(!events[1].flags_changed);
+        assert!(!events[2].flags_changed);
+        assert_eq!(events[1].flags, K_CG_EVENT_FLAG_MASK_COMMAND);
+
+        // Cmd-up: flagsChanged with all modifiers cleared.
+        assert_eq!(events[3].key, KEYCODE_LEFT_CMD);
+        assert!(!events[3].down);
+        assert_eq!(events[3].flags, 0);
+        assert!(events[3].flags_changed);
+    }
 }

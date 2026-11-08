@@ -21,7 +21,8 @@ from .. import config
 from ..database import Capture as DBCapture
 from ..models import CaptureResponse, RefinementFlagsModel
 from ..utils.audio import load_audio
-from .refinement import RefinementFlags, refine_transcript
+from .transcript_cleanup import collapse_repetitive_artifacts
+from .retention import audio_available, remove_audio
 from .transcribe import get_whisper_model
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def _to_response(row: DBCapture) -> CaptureResponse:
     return CaptureResponse(
         id=row.id,
         audio_path=row.audio_path,
+        audio_available=audio_available(row.audio_path),
         source=row.source,
         language=row.language,
         duration_ms=row.duration_ms,
@@ -96,6 +98,26 @@ async def create_capture(
             audio, sr = None, None
             duration_ms = None
 
+        # Trim TRAILING silence before Whisper sees the audio. Whisper
+        # hallucinates learned closing phrases on trailing silence
+        # ("Ja. Ja. Vielen Dank.", "Thanks for watching") — the quiet tail
+        # between the last spoken word and the chord release is exactly
+        # where they are born, so cut it off at the source. Tail-only on
+        # purpose: first words are often spoken quietly while the chord
+        # hand is still settling, and a leading trim was observed eating
+        # them ("Ich muss das jetzt…" → "Jetzt…"). top_db=40 is
+        # conservative — only near-silence relative to the recording's
+        # peak is dropped, quiet speech and in-sentence pauses survive.
+        trimmed = False
+        if audio is not None and sr:
+            import librosa  # already the decoder behind load_audio
+
+            _, (_, speech_end) = librosa.effects.trim(audio, top_db=40)
+            if 0 < speech_end < len(audio):
+                audio = audio[:speech_end]
+                duration_ms = int((len(audio) / sr) * 1000)
+                trimmed = True
+
         if audio is None or sr is None:
             # Decode failed. Only pass the file straight to whisper if the
             # source is a format its miniaudio loader can still read — webm,
@@ -107,6 +129,10 @@ async def create_capture(
             audio_path = raw_path
         elif suffix == ".wav":
             audio_path = raw_path
+            if trimmed:
+                # Persist the trimmed take so the stored capture, its
+                # duration, and what Whisper transcribes stay one thing.
+                sf.write(str(raw_path), audio, sr, format="WAV")
         else:
             # Transcode to WAV so downstream loaders (miniaudio, soundfile) work
             # regardless of what format the client shipped.
@@ -120,6 +146,12 @@ async def create_capture(
         whisper = get_whisper_model()
         resolved_stt = stt_model or whisper.model_size
         transcript = await whisper.transcribe(str(audio_path), language, resolved_stt)
+        # Strip STT hallucination loops ("canste" × 100 when audio trails
+        # off) from the raw transcript itself, not just inside the LLM
+        # refine path — with auto-refine off the raw text is what gets
+        # pasted, and a deterministic collapse must not depend on the LLM
+        # being enabled.
+        transcript = collapse_repetitive_artifacts(transcript)
 
         row = DBCapture(
             id=capture_id,
@@ -169,40 +201,11 @@ def delete_capture(capture_id: str, db: Session) -> bool:
     if not row:
         return False
 
-    resolved = config.resolve_storage_path(row.audio_path)
-    if resolved and resolved.exists():
-        try:
-            resolved.unlink()
-        except OSError:
-            logger.exception("Failed to remove capture audio %s", resolved)
+    remove_audio(row.audio_path)
 
     db.delete(row)
     db.commit()
     return True
-
-
-async def refine_capture(
-    capture_id: str,
-    flags: RefinementFlags,
-    model_size: Optional[str],
-    db: Session,
-) -> Optional[CaptureResponse]:
-    row = db.query(DBCapture).filter(DBCapture.id == capture_id).first()
-    if not row:
-        return None
-
-    refined, llm_size = await refine_transcript(
-        row.transcript_raw or "",
-        flags,
-        model_size=model_size,
-    )
-
-    row.transcript_refined = refined
-    row.llm_model = llm_size
-    row.refinement_flags = json.dumps(flags.to_dict())
-    db.commit()
-    db.refresh(row)
-    return _to_response(row)
 
 
 async def retranscribe_capture(
@@ -222,6 +225,8 @@ async def retranscribe_capture(
     whisper = get_whisper_model()
     resolved_stt = stt_model or whisper.model_size
     transcript = await whisper.transcribe(str(resolved), language, resolved_stt)
+    # Same deterministic loop-strip as create_capture — see comment there.
+    transcript = collapse_repetitive_artifacts(transcript)
 
     row.transcript_raw = transcript
     row.stt_model = resolved_stt

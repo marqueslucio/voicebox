@@ -1,44 +1,18 @@
 """
-Shared utilities for TTS/STT backend implementations.
-
-Eliminates duplication of cache checking, device detection,
-voice prompt combination, and model loading progress tracking.
+Shared cache and download-progress utilities for speech recognition.
 """
 
 import logging
-import os
-import platform
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Optional
 
-import numpy as np
 
-from ..utils.audio import normalize_audio, load_audio
-from ..utils.hf_offline_patch import force_offline_if_cached
 from ..utils.progress import get_progress_manager
 from ..utils.hf_progress import HFProgressTracker, create_hf_progress_callback
 from ..utils.tasks import get_task_manager
 
 logger = logging.getLogger(__name__)
-
-
-def has_in_progress_download(blobs_dir: Path) -> bool:
-    """
-    Whether a HuggingFace repo's ``blobs`` dir holds a genuinely in-progress download.
-
-    An ``.incomplete`` blob means a download is still in progress -- unless a
-    completed blob with the same hash already sits next to it, which happens
-    when a retried/concurrent download leaves a stale ``.incomplete`` behind
-    after the real transfer already finished. Only orphaned ``.incomplete``
-    files (no matching completed blob) count as "in progress".
-    """
-    if not blobs_dir.exists():
-        return False
-    return any(
-        not incomplete.with_name(incomplete.name.removesuffix(".incomplete")).exists()
-        for incomplete in blobs_dir.glob("*.incomplete")
-    )
 
 
 def is_model_cached(
@@ -51,7 +25,7 @@ def is_model_cached(
     Check if a HuggingFace model is fully cached locally.
 
     Args:
-        hf_repo: HuggingFace repo ID (e.g. "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+        hf_repo: HuggingFace repo ID.
         weight_extensions: File extensions that count as model weights.
         required_files: If set, check that these specific filenames exist
                         in snapshots instead of checking by extension.
@@ -67,8 +41,10 @@ def is_model_cached(
         if not repo_cache.exists():
             return False
 
-        if has_in_progress_download(repo_cache / "blobs"):
-            logger.debug(f"Found in-progress .incomplete file for {hf_repo}")
+        # Incomplete blobs mean a download is still in progress
+        blobs_dir = repo_cache / "blobs"
+        if blobs_dir.exists() and any(blobs_dir.glob("*.incomplete")):
+            logger.debug(f"Found .incomplete files for {hf_repo}")
             return False
 
         snapshots_dir = repo_cache / "snapshots"
@@ -95,200 +71,8 @@ def is_model_cached(
         return False
 
 
-# Documented escape hatch (docs/content/docs/overview/gpu-acceleration.mdx):
-# users whose GPU has no compiled kernels in the bundled PyTorch set this to run
-# on CPU instead of crashing at generation time.
-FORCE_CPU_ENV_VAR = "VOICEBOX_FORCE_CPU"
-FORCE_CPU_ENABLED_VALUE = "1"
-
-
-def get_torch_device(
-    *,
-    allow_xpu: bool = False,
-    allow_directml: bool = False,
-    allow_mps: bool = False,
-    force_cpu_on_mac: bool = False,
-) -> str:
-    """
-    Detect the best available torch device.
-
-    Args:
-        allow_xpu: Check for Intel XPU (IPEX) support.
-        allow_directml: Check for DirectML (Windows) support.
-        allow_mps: Allow MPS (Apple Silicon). If False, MPS falls back to CPU.
-        force_cpu_on_mac: Force CPU on macOS regardless of GPU availability.
-
-    The VOICEBOX_FORCE_CPU override wins over every other candidate, and is
-    resolved before torch is imported so it still works when the installed
-    build is the reason CPU is wanted.
-    """
-    # Stripped: on Windows, where this override matters most, it is usually set
-    # through the GUI environment editor.
-    if os.environ.get(FORCE_CPU_ENV_VAR, "").strip() == FORCE_CPU_ENABLED_VALUE:
-        logger.info("%s=%s set, forcing CPU device", FORCE_CPU_ENV_VAR, FORCE_CPU_ENABLED_VALUE)
-        return "cpu"
-
-    if force_cpu_on_mac and platform.system() == "Darwin":
-        return "cpu"
-
-    import torch
-
-    if torch.cuda.is_available():
-        return "cuda"
-
-    if allow_xpu:
-        try:
-            import intel_extension_for_pytorch  # noqa: F401
-
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                return "xpu"
-        except ImportError:
-            pass
-
-    if allow_directml:
-        try:
-            import torch_directml
-
-            if torch_directml.device_count() > 0:
-                return torch_directml.device(0)
-        except ImportError:
-            pass
-
-    if allow_mps:
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-
-    return "cpu"
-
-
-def check_cuda_compatibility() -> tuple[bool, str | None]:
-    """Check if the installed PyTorch supports the current GPU's compute capability.
-
-    Returns:
-        (compatible, warning_message) — compatible is True if OK or no CUDA GPU,
-        warning_message is a human-readable string if there's a problem.
-    """
-    import torch
-
-    if not torch.cuda.is_available():
-        return True, None
-
-    # ROCm/HIP uses the cuda frontend but has different architecture names (gfx*).
-    # Skip NVIDIA-specific compute capability checks on AMD hardware.
-    if hasattr(torch.version, "hip") and torch.version.hip:
-        return True, None
-
-    major, minor = torch.cuda.get_device_capability(0)
-    capability = f"{major}.{minor}"
-    device_name = torch.cuda.get_device_name(0)
-    sm_tag = f"sm_{major}{minor}"
-
-    # torch.cuda._get_arch_list() returns the SM architectures this build
-    # was compiled for (e.g. ["sm_50", "sm_60", ..., "sm_90"]).
-    try:
-        arch_list = torch.cuda._get_arch_list()
-        if arch_list:
-            # Check for both sm_XX and compute_XX (JIT-compiled) entries
-            compute_tag = f"compute_{major}{minor}"
-            if sm_tag not in arch_list and compute_tag not in arch_list:
-                return False, (
-                    f"{device_name} (compute capability {capability} / {sm_tag}) "
-                    f"is not supported by this PyTorch build. "
-                    f"Supported architectures: {', '.join(arch_list)}. "
-                    f"Install PyTorch nightly (cu128) for newer GPU support: "
-                    f"pip install torch --index-url https://download.pytorch.org/whl/nightly/cu128"
-                )
-    except AttributeError:
-        pass
-
-    return True, None
-
-
-def empty_device_cache(device: str) -> None:
-    """
-    Free cached memory and unreferenced tensors on the given device (CUDA, XPU, MPS, CPU).
-
-    Backends call this after model unloading and post-generation cleanup to return
-    memory to the OS and prevent process heap accumulation.
-    """
-    import gc
-    import torch
-
-    gc.collect()
-
-    if device == "cuda" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif device == "xpu" and hasattr(torch, "xpu"):
-        torch.xpu.empty_cache()
-    elif device == "mps" and torch.backends.mps.is_available() and hasattr(torch.mps, "empty_cache"):
-        torch.mps.empty_cache()
-
-
-def empty_mlx_cache() -> None:
-    """
-    Free cached memory in the MLX allocator.
-
-    MLX keeps freed array buffers in an internal pool for reuse instead of
-    returning them to the OS. Backends must call this after unloading an
-    MLX model, or the process's memory footprint never shrinks even though
-    the model object itself was dropped.
-
-    Safe from any thread: ``mx.clear_cache`` only drains the global
-    allocator pool and never touches the per-thread stream registry, so
-    unlike load/generate it does not have to run on the MLX worker thread
-    (verified from the FastAPI event loop with a generation in flight on
-    the worker).
-    """
-    import mlx.core as mx
-
-    mx.clear_cache()
-
-
-def manual_seed(seed: int, device: str) -> None:
-    """
-    Set the random seed on both CPU and the active accelerator.
-
-    Covers CUDA and Intel XPU so that generation is reproducible
-    regardless of which GPU backend is in use.
-    """
-    import torch
-
-    torch.manual_seed(seed)
-    if device == "cuda" and torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-    elif device == "xpu" and hasattr(torch, "xpu"):
-        torch.xpu.manual_seed(seed)
-
-
-async def combine_voice_prompts(
-    audio_paths: List[str],
-    reference_texts: List[str],
-    *,
-    sample_rate: Optional[int] = None,
-) -> Tuple[np.ndarray, str]:
-    """
-    Combine multiple reference audio samples into one.
-
-    Loads each audio file, normalizes, concatenates, and joins texts.
-
-    Args:
-        audio_paths: Paths to reference audio files.
-        reference_texts: Corresponding transcripts.
-        sample_rate: If set, resample audio to this rate during loading.
-    """
-    combined_audio = []
-
-    for path in audio_paths:
-        kwargs = {"sample_rate": sample_rate} if sample_rate else {}
-        audio, _sr = load_audio(path, **kwargs)
-        audio = normalize_audio(audio)
-        combined_audio.append(audio)
-
-    mixed = np.concatenate(combined_audio)
-    mixed = normalize_audio(mixed)
-    combined_text = " ".join(reference_texts)
-
-    return mixed, combined_text
+class DownloadCancelled(RuntimeError):
+    """A transfer was explicitly cancelled by its user."""
 
 
 @contextmanager
@@ -296,6 +80,7 @@ def model_load_progress(
     model_name: str,
     is_cached: bool,
     filter_non_downloads: Optional[bool] = None,
+    download_task=None,
 ):
     """
     Context manager for model loading with HF download progress tracking.
@@ -304,14 +89,14 @@ def model_load_progress(
     and error reporting that every backend duplicates.
 
     Args:
-        model_name: Progress tracking key (e.g. "qwen-tts-1.7B", "whisper-base").
+        model_name: Progress tracking key (e.g. "whisper-base").
         is_cached: Whether the model is already downloaded.
         filter_non_downloads: Whether to filter non-download tqdm bars.
                               Defaults to `is_cached`.
 
     Yields:
-        The tracker context (already entered). The caller loads the model
-        inside the `with` block. The tqdm patch is torn down on exit.
+        A cancellation checker for callers to invoke before creating native handles.
+        The caller loads the model inside the block; tqdm is restored on exit.
 
     Usage:
         with model_load_progress("qwen-tts-1.7B", is_cached) as ctx:
@@ -323,14 +108,26 @@ def model_load_progress(
     progress_manager = get_progress_manager()
     task_manager = get_task_manager()
 
-    progress_callback = create_hf_progress_callback(model_name, progress_manager)
+    if download_task is None and (not is_cached or task_manager.is_download_active(model_name)):
+        download_task = task_manager.start_download(model_name)
+
+    def check_cancelled():
+        if download_task is not None and download_task.cancelled.is_set():
+            raise DownloadCancelled("Model download cancelled")
+
+    check_cancelled()
+    report_progress = create_hf_progress_callback(model_name, progress_manager)
+
+    def progress_callback(current, total, filename=""):
+        check_cancelled()
+        report_progress(current, total, filename)
+
     tracker = HFProgressTracker(progress_callback, filter_non_downloads=filter_non_downloads)
 
     tracker_context = tracker.patch_download()
     tracker_context.__enter__()
 
     if not is_cached:
-        task_manager.start_download(model_name)
         progress_manager.update_progress(
             model_name=model_name,
             current=0,
@@ -340,54 +137,20 @@ def model_load_progress(
         )
 
     try:
-        with force_offline_if_cached(is_cached, model_name):
-            yield tracker_context
+        check_cancelled()
+        yield check_cancelled
+        check_cancelled()
+    except DownloadCancelled:
+        raise
     except Exception as e:
         # Report error to both managers
         progress_manager.mark_error(model_name, str(e))
-        task_manager.error_download(model_name, str(e))
+        task_manager.error_download(model_name, str(e), download_task)
         raise
     else:
         # Only mark complete if we were tracking a download
         if not is_cached:
             progress_manager.mark_complete(model_name)
-            task_manager.complete_download(model_name)
+            task_manager.complete_download(model_name, download_task)
     finally:
         tracker_context.__exit__(None, None, None)
-
-
-def patch_chatterbox_f32(model) -> None:
-    """
-    Patch float64 -> float32 dtype mismatches in upstream chatterbox.
-
-    librosa.load returns float64 numpy arrays. Multiple upstream code paths
-    convert these to torch tensors via torch.from_numpy() without casting,
-    then matmul against float32 model weights. This patches the two known
-    entry points:
-
-    1. S3Tokenizer.log_mel_spectrogram — audio tensor hits _mel_filters (f32)
-    2. VoiceEncoder.forward — float64 mel spectrograms hit LSTM weights (f32)
-    """
-    import types
-
-    # Patch S3Tokenizer
-    _tokzr = model.s3gen.tokenizer
-    _orig_log_mel = _tokzr.log_mel_spectrogram.__func__
-
-    def _f32_log_mel(self_tokzr, audio, padding=0):
-        import torch as _torch
-
-        if _torch.is_tensor(audio):
-            audio = audio.float()
-        return _orig_log_mel(self_tokzr, audio, padding)
-
-    _tokzr.log_mel_spectrogram = types.MethodType(_f32_log_mel, _tokzr)
-
-    # Patch VoiceEncoder
-    _ve = model.ve
-    _orig_ve_forward = _ve.forward.__func__
-
-    def _f32_ve_forward(self_ve, mels):
-        return _orig_ve_forward(self_ve, mels.float())
-
-    _ve.forward = types.MethodType(_f32_ve_forward, _ve)

@@ -17,123 +17,6 @@ from ..utils.tasks import get_task_manager
 router = APIRouter()
 
 
-def _get_dir_size(path: Path) -> int:
-    """Get total size of a directory in bytes."""
-    total = 0
-    for f in path.rglob("*"):
-        if f.is_file():
-            total += f.stat().st_size
-    return total
-
-
-def _copy_with_progress(src: Path, dst: Path, progress_manager, copied_so_far: int, total_bytes: int) -> int:
-    """Copy a directory tree with byte-level progress tracking."""
-    dst.mkdir(parents=True, exist_ok=True)
-    for item in src.iterdir():
-        dest_item = dst / item.name
-        if item.is_dir():
-            copied_so_far = _copy_with_progress(item, dest_item, progress_manager, copied_so_far, total_bytes)
-        else:
-            size = item.stat().st_size
-            shutil.copy2(str(item), str(dest_item))
-            copied_so_far += size
-            progress_manager.update_progress(
-                "migration",
-                copied_so_far,
-                total_bytes,
-                filename=item.name,
-                status="downloading",
-            )
-    return copied_so_far
-
-
-DEFAULT_QWEN_MODEL_SIZE = "1.7B"
-
-
-def _resolve_model_config(model_name: str):
-    """Look up a model config by name or raise a 400 listing the valid ids."""
-    from ..backends import get_all_model_configs, get_model_config
-
-    config = get_model_config(model_name)
-    if config is None:
-        known = sorted(cfg.model_name for cfg in get_all_model_configs())
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown model: {model_name!r}. Available: {known}",
-        )
-    return config
-
-
-@router.post("/models/load")
-async def load_model(
-    request: models.ModelLoadRequest | None = None,
-    model_size: str | None = None,
-):
-    """Load a model into memory.
-
-    Pass ``{"model_name": "kokoro"}`` to target any registered engine. Only an
-    absent ``model_name`` falls back to the default Qwen TTS backend, selected
-    by the ``model_size`` query parameter, which is what callers did before
-    ``model_name`` existed. A supplied-but-empty name is a bad request, not a
-    request for the default — silently loading Qwen there is the very bug this
-    endpoint had.
-    """
-    from ..backends import get_model_load_func
-    from ..services import tts
-
-    requested_name = request.model_name if request else None
-    requested_size = (request.model_size if request else None) or model_size
-
-    if requested_name is not None:
-        config = _resolve_model_config(requested_name)
-        try:
-            result = get_model_load_func(config)()
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-        return {"message": f"Model {config.model_name} loaded successfully"}
-
-    size = requested_size or DEFAULT_QWEN_MODEL_SIZE
-    try:
-        tts_model = tts.get_tts_model()
-        await tts_model.load_model_async(size)
-        return {"message": f"Model {size} loaded successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/models/unload")
-async def unload_model(request: models.ModelLoadRequest | None = None):
-    """Unload a model from memory.
-
-    Pass ``{"model_name": "chatterbox-tts"}`` to target a specific engine —
-    same behaviour as ``POST /models/{model_name}/unload``. Only an absent
-    ``model_name`` unloads the default Qwen TTS model, as it always has; a
-    supplied-but-empty name is a bad request.
-    """
-    from ..backends import unload_model_by_config
-    from ..services import tts
-
-    requested_name = request.model_name if request else None
-
-    if requested_name is not None:
-        config = _resolve_model_config(requested_name)
-        try:
-            was_loaded = unload_model_by_config(config)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-        if not was_loaded:
-            return {"message": f"Model {config.model_name} is not loaded"}
-        return {"message": f"Model {config.model_name} unloaded successfully"}
-
-    try:
-        tts.unload_tts_model()
-        return {"message": "Model unloaded successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
 @router.post("/models/{model_name}/unload")
 async def unload_model_by_name(model_name: str):
     """Unload a specific model from memory without deleting it from disk."""
@@ -144,7 +27,7 @@ async def unload_model_by_name(model_name: str):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
 
     try:
-        was_loaded = unload_model_by_config(config)
+        was_loaded = await asyncio.to_thread(unload_model_by_config, config)
         if not was_loaded:
             return {"message": f"Model {model_name} is not loaded"}
         return {"message": f"Model {model_name} unloaded successfully"}
@@ -159,119 +42,6 @@ async def get_model_progress(model_name: str):
 
     async def event_generator():
         async for event in progress_manager.subscribe(model_name):
-            yield event
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@router.get("/models/cache-dir")
-async def get_models_cache_dir():
-    """Get the path to the HuggingFace model cache directory."""
-    from huggingface_hub import constants as hf_constants
-
-    return {"path": str(Path(hf_constants.HF_HUB_CACHE))}
-
-
-@router.post("/models/migrate")
-async def migrate_models(request: models.ModelMigrateRequest):
-    """Move all downloaded models to a new directory with byte-level progress via SSE."""
-    from huggingface_hub import constants as hf_constants
-
-    source = Path(hf_constants.HF_HUB_CACHE)
-    destination = Path(request.destination)
-
-    if not source.exists():
-        raise HTTPException(status_code=404, detail="Current model cache directory not found")
-
-    if source.resolve() == destination.resolve():
-        raise HTTPException(status_code=400, detail="Source and destination are the same directory")
-
-    if destination.resolve().is_relative_to(source.resolve()):
-        raise HTTPException(status_code=400, detail="Destination cannot be inside the current cache directory")
-
-    progress_manager = get_progress_manager()
-    model_dirs = [d for d in source.iterdir() if d.name.startswith("models--") and d.is_dir()]
-    if not model_dirs:
-        progress_manager.update_progress("migration", 1, 1, status="complete")
-        progress_manager.mark_complete("migration")
-        return {"moved": 0, "errors": [], "source": str(source), "destination": str(destination)}
-
-    destination.mkdir(parents=True, exist_ok=True)
-
-    same_fs = False
-    try:
-        same_fs = source.stat().st_dev == destination.stat().st_dev
-    except OSError:
-        pass
-
-    async def migrate_background():
-        moved = 0
-        errors = []
-        try:
-            if same_fs:
-                total = len(model_dirs)
-                for i, item in enumerate(model_dirs):
-                    dest_item = destination / item.name
-                    try:
-                        if dest_item.exists():
-                            shutil.rmtree(dest_item)
-                        shutil.move(str(item), str(dest_item))
-                        moved += 1
-                        progress_manager.update_progress(
-                            "migration",
-                            i + 1,
-                            total,
-                            filename=item.name,
-                            status="downloading",
-                        )
-                    except Exception as e:
-                        errors.append(f"{item.name}: {str(e)}")
-            else:
-                total_bytes = sum(_get_dir_size(d) for d in model_dirs)
-                progress_manager.update_progress(
-                    "migration", 0, total_bytes, filename="Calculating...", status="downloading"
-                )
-
-                copied = 0
-                for item in model_dirs:
-                    dest_item = destination / item.name
-                    try:
-                        if dest_item.exists():
-                            shutil.rmtree(dest_item)
-                        copied = await asyncio.to_thread(
-                            _copy_with_progress, item, dest_item, progress_manager, copied, total_bytes
-                        )
-                        await asyncio.to_thread(shutil.rmtree, str(item))
-                        moved += 1
-                    except Exception as e:
-                        errors.append(f"{item.name}: {str(e)}")
-
-            progress_manager.update_progress("migration", 1, 1, status="complete")
-            progress_manager.mark_complete("migration")
-        except Exception as e:
-            progress_manager.update_progress("migration", 0, 0, status="error")
-            progress_manager.mark_error("migration", str(e))
-
-    create_background_task(migrate_background())
-
-    return {"source": str(source), "destination": str(destination)}
-
-
-@router.get("/models/migrate/progress")
-async def get_migration_progress():
-    """Get model migration progress via Server-Sent Events."""
-    progress_manager = get_progress_manager()
-
-    async def event_generator():
-        async for event in progress_manager.subscribe("migration"):
             yield event
 
     return StreamingResponse(
@@ -305,8 +75,7 @@ async def get_model_status():
     except ImportError:
         use_scan_cache = False
 
-    from ..backends import get_all_model_configs, check_model_loaded
-    from ..backends.base import has_in_progress_download, is_model_cached
+    from ..backends import get_all_model_configs, check_model_cached, check_model_loaded
 
     registry_configs = get_all_model_configs()
     model_configs = [
@@ -314,9 +83,10 @@ async def get_model_status():
             "model_name": cfg.model_name,
             "display_name": cfg.display_name,
             "hf_repo_id": cfg.hf_repo_id,
-            "aux_hf_repo_ids": cfg.aux_hf_repo_ids,
             "model_size": cfg.model_size,
+            "weight_filename": cfg.weight_filename,
             "check_loaded": lambda c=cfg: check_model_loaded(c),
+            "check_cached": lambda c=cfg: check_model_cached(c),
         }
         for cfg in registry_configs
     ]
@@ -347,7 +117,8 @@ async def get_model_status():
                         for rev in repo.revisions:
                             for f in rev.files:
                                 fname = f.file_name.lower()
-                                if fname.endswith((".safetensors", ".bin", ".pt", ".pth", ".npz")):
+                                if (fname == config["weight_filename"] if config["weight_filename"] else
+                                        fname.endswith((".safetensors", ".bin", ".pt", ".pth", ".npz"))):
                                     has_model_weights = True
                                     break
                             if has_model_weights:
@@ -357,7 +128,8 @@ async def get_model_status():
                         try:
                             cache_dir = hf_constants.HF_HUB_CACHE
                             blobs_dir = Path(cache_dir) / ("models--" + repo_id.replace("/", "--")) / "blobs"
-                            has_incomplete = has_in_progress_download(blobs_dir)
+                            if blobs_dir.exists():
+                                has_incomplete = any(blobs_dir.glob("*.incomplete"))
                         except Exception:
                             pass
 
@@ -377,19 +149,20 @@ async def get_model_status():
 
                     if repo_cache.exists():
                         blobs_dir = repo_cache / "blobs"
-                        has_incomplete = has_in_progress_download(blobs_dir)
+                        has_incomplete = blobs_dir.exists() and any(blobs_dir.glob("*.incomplete"))
 
                         if not has_incomplete:
                             snapshots_dir = repo_cache / "snapshots"
                             has_model_files = False
                             if snapshots_dir.exists():
-                                has_model_files = (
+                                has_model_files = (any(snapshots_dir.rglob(config["weight_filename"]))
+                                    if config["weight_filename"] else (
                                     any(snapshots_dir.rglob("*.bin"))
                                     or any(snapshots_dir.rglob("*.safetensors"))
                                     or any(snapshots_dir.rglob("*.pt"))
                                     or any(snapshots_dir.rglob("*.pth"))
                                     or any(snapshots_dir.rglob("*.npz"))
-                                )
+                                ))
 
                             if has_model_files:
                                 downloaded = True
@@ -405,11 +178,10 @@ async def get_model_status():
                 except Exception:
                     pass
 
-            # A model whose backend also pulls auxiliary repos at load time
-            # (e.g. Chatterbox MLX's S3 tokenizer) is only downloaded once
-            # those are present too, matching the backend's own cache check.
-            if downloaded and not all(is_model_cached(repo) for repo in config["aux_hf_repo_ids"]):
-                downloaded = False
+            if config["weight_filename"]:
+                downloaded = config["check_cached"]()
+                if not downloaded:
+                    size_mb = None
 
             try:
                 loaded = config["check_loaded"]()
@@ -468,18 +240,17 @@ async def trigger_model_download(request: models.ModelDownloadRequest):
     if not config:
         raise HTTPException(status_code=400, detail=f"Unknown model: {request.model_name}")
 
-    load_func = get_model_load_func(config)
+    download_task = task_manager.start_download(request.model_name)
+    load_func = get_model_load_func(config, download_task=download_task)
 
     async def download_in_background():
         try:
             result = load_func()
             if asyncio.iscoroutine(result):
                 await result
-            task_manager.complete_download(request.model_name)
+            task_manager.complete_download(request.model_name, download_task)
         except Exception as e:
-            task_manager.error_download(request.model_name, str(e))
-
-    task_manager.start_download(request.model_name)
+            task_manager.error_download(request.model_name, str(e), download_task)
 
     progress_manager.update_progress(
         model_name=request.model_name,
@@ -526,7 +297,7 @@ async def delete_model(model_name: str):
     hf_repo_id = config.hf_repo_id
 
     try:
-        unload_model_by_config(config)
+        await asyncio.to_thread(unload_model_by_config, config)
 
         cache_dir = hf_constants.HF_HUB_CACHE
         repo_cache_dir = Path(cache_dir) / ("models--" + hf_repo_id.replace("/", "--"))
@@ -536,10 +307,6 @@ async def delete_model(model_name: str):
 
         try:
             shutil.rmtree(repo_cache_dir)
-            for aux_repo_id in config.aux_hf_repo_ids:
-                aux_cache_dir = Path(cache_dir) / ("models--" + aux_repo_id.replace("/", "--"))
-                if aux_cache_dir.exists():
-                    shutil.rmtree(aux_cache_dir)
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Failed to delete model cache directory: {str(e)}")
 

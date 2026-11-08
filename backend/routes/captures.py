@@ -7,12 +7,10 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..backends import get_llm_model_configs, get_stt_model_configs
-from ..backends.base import is_model_cached
+from ..backends import check_model_cached, get_stt_model_configs
 from ..database import Capture as DBCapture, get_db
 from ..services import captures as captures_service
 from ..services import settings as settings_service
-from ..services.refinement import RefinementFlags
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +60,7 @@ async def create_capture_endpoint(
 
     return models.CaptureCreateResponse(
         **capture.model_dump(),
-        auto_refine=bool(saved.auto_refine),
+        auto_refine=False,
         allow_auto_paste=bool(saved.allow_auto_paste),
     )
 
@@ -110,53 +108,19 @@ async def get_capture_audio_endpoint(capture_id: str, db: Session = Depends(get_
 
 @router.delete("/captures/{capture_id}")
 async def delete_capture_endpoint(capture_id: str, db: Session = Depends(get_db)):
-    deleted = captures_service.delete_capture(capture_id, db)
+    try:
+        deleted = captures_service.delete_capture(capture_id, db)
+    except (OSError, ValueError) as e:
+        logger.exception("Could not safely delete capture %s", capture_id)
+        raise HTTPException(status_code=500, detail="Could not safely delete capture audio") from e
     if not deleted:
         raise HTTPException(status_code=404, detail="Capture not found")
     return {"message": f"Capture {capture_id} deleted"}
 
 
-@router.post("/captures/{capture_id}/refine", response_model=models.CaptureResponse)
-async def refine_capture_endpoint(
-    capture_id: str,
-    request: models.CaptureRefineRequest,
-    db: Session = Depends(get_db),
-):
-    saved = settings_service.get_capture_settings(db)
-    if request.flags is not None:
-        flags = RefinementFlags(
-            smart_cleanup=request.flags.smart_cleanup,
-            self_correction=request.flags.self_correction,
-            preserve_technical=request.flags.preserve_technical,
-        )
-    else:
-        flags = RefinementFlags(
-            smart_cleanup=saved.smart_cleanup,
-            self_correction=saved.self_correction,
-            preserve_technical=saved.preserve_technical,
-        )
-
-    resolved_model = request.model_size or saved.llm_model
-
-    try:
-        capture = await captures_service.refine_capture(
-            capture_id=capture_id,
-            flags=flags,
-            model_size=resolved_model,
-            db=db,
-        )
-    except Exception as e:
-        logger.exception("Refinement failed for capture %s", capture_id)
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found")
-    return capture
-
-
 @router.get("/capture/readiness", response_model=models.CaptureReadinessResponse)
 async def capture_readiness_endpoint(db: Session = Depends(get_db)):
-    """Whether the STT and LLM models the user has selected are downloaded.
+    """Whether the selected STT model is downloaded.
 
     The frontend gates the global hotkey on this — pressing the chord with
     a missing model would otherwise produce a stuck "transcribing" pill that
@@ -169,52 +133,22 @@ async def capture_readiness_endpoint(db: Session = Depends(get_db)):
         (c for c in get_stt_model_configs() if c.model_size == saved.stt_model),
         None,
     )
-    llm_cfg = next(
-        (c for c in get_llm_model_configs() if c.model_size == saved.llm_model),
-        None,
-    )
-
-    if stt_cfg is None or llm_cfg is None:
+    if stt_cfg is None:
         # Should be impossible — both fields are pattern-validated against
         # known sizes — but bail loudly rather than return half a response.
         raise HTTPException(
             status_code=500,
-            detail=f"No model config for stt={saved.stt_model} or llm={saved.llm_model}",
+            detail=f"No model config for stt={saved.stt_model}",
         )
 
     return models.CaptureReadinessResponse(
         stt=models.ModelReadiness(
-            ready=is_model_cached(stt_cfg.hf_repo_id),
+            ready=check_model_cached(stt_cfg),
             model_name=stt_cfg.model_name,
             display_name=stt_cfg.display_name,
             size=stt_cfg.model_size,
             size_mb=stt_cfg.size_mb or None,
         ),
-        llm=_llm_readiness(saved, llm_cfg),
-    )
-
-
-def _llm_readiness(saved, llm_cfg) -> models.ModelReadiness:
-    """LLM row of the readiness checklist.
-
-    A configured custom OpenAI-compatible endpoint owns the model, so there
-    is nothing to download locally and the gate is green regardless of the
-    Qwen cache; the row names the remote model instead.
-    """
-    if saved.custom_llm_endpoint and saved.custom_llm_model:
-        return models.ModelReadiness(
-            ready=True,
-            model_name=llm_cfg.model_name,
-            display_name=saved.custom_llm_model,
-            size=saved.custom_llm_model,
-            size_mb=None,
-        )
-    return models.ModelReadiness(
-        ready=is_model_cached(llm_cfg.hf_repo_id),
-        model_name=llm_cfg.model_name,
-        display_name=llm_cfg.display_name,
-        size=llm_cfg.model_size,
-        size_mb=llm_cfg.size_mb or None,
     )
 
 
@@ -240,6 +174,8 @@ async def retranscribe_capture_endpoint(
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=410, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Retranscribe failed for capture %s", capture_id)
         raise HTTPException(status_code=500, detail=str(e))

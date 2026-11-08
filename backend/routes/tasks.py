@@ -1,11 +1,10 @@
 """Task and cache management endpoints."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from fastapi import APIRouter
 
 from .. import models
-from ..utils.cache import clear_voice_prompt_cache
 from ..utils.progress import get_progress_manager
 from ..utils.tasks import get_task_manager
 from fastapi import HTTPException
@@ -29,22 +28,9 @@ async def clear_all_tasks():
     return {"message": "All task state cleared"}
 
 
-@router.post("/cache/clear")
-async def clear_cache():
-    """Clear all voice prompt caches (memory and disk)."""
-    try:
-        deleted_count = clear_voice_prompt_cache()
-        return {
-            "message": "Voice prompt cache cleared successfully",
-            "files_deleted": deleted_count,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
-
-
 @router.get("/tasks/active", response_model=models.ActiveTasksResponse)
 async def get_active_tasks():
-    """Return all currently active downloads and generations."""
+    """Return all currently active downloads."""
     task_manager = get_task_manager()
     progress_manager = get_progress_manager()
 
@@ -91,9 +77,9 @@ async def get_active_tasks():
                 try:
                     started_at = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
                 except (ValueError, AttributeError):
-                    started_at = datetime.now(UTC)
+                    started_at = datetime.utcnow()
             else:
-                started_at = datetime.now(UTC)
+                started_at = datetime.utcnow()
 
             active_downloads.append(
                 models.ActiveDownloadTask(
@@ -108,18 +94,4 @@ async def get_active_tasks():
                 )
             )
 
-    active_generations = []
-    for gen_task in task_manager.get_active_generations():
-        active_generations.append(
-            models.ActiveGenerationTask(
-                task_id=gen_task.task_id,
-                profile_id=gen_task.profile_id,
-                text_preview=gen_task.text_preview,
-                started_at=gen_task.started_at,
-            )
-        )
-
-    return models.ActiveTasksResponse(
-        downloads=active_downloads,
-        generations=active_generations,
-    )
+    return models.ActiveTasksResponse(downloads=active_downloads)

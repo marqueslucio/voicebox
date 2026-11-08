@@ -170,17 +170,4 @@ sips -s format png -z 192 192 "$SOURCE_ICON" --out "$ICONS_DIR/android/mipmap-xx
 sips -s format png -z 192 192 "$SOURCE_ICON" --out "$ICONS_DIR/android/mipmap-xxxhdpi/ic_launcher_round.png" 2>/dev/null
 sips -s format png -z 192 192 "$SOURCE_ICON" --out "$ICONS_DIR/android/mipmap-xxxhdpi/ic_launcher_foreground.png" 2>/dev/null
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✅ All icons updated successfully!"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "Updated:"
-echo "  ✓ Liquid Glass icon bundle with all appearance variants"
-echo "  ✓ macOS/Desktop fallback icons"
-echo "  ✓ Windows Square logos"
-echo "  ✓ Windows icon.ico (multi-size)"
-echo "  ✓ iOS AppIcons (18 sizes)"
-echo "  ✓ Android mipmap icons (5 densities)"
-echo ""
-echo "Next: Rebuild the app with 'cd tauri && bun run tauri build'"
+echo "Voicebox app icons updated. Rebuild with: cd tauri && bun run tauri build"

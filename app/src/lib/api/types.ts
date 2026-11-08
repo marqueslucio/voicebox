@@ -1,146 +1,6 @@
-// API Types matching backend Pydantic models
-import type { LanguageCode } from '@/lib/constants/languages';
-
-export type VoiceType = 'cloned' | 'preset' | 'designed';
-
-export interface VoiceProfileCreate {
-  name: string;
-  description?: string;
-  language: LanguageCode;
-  voice_type?: VoiceType;
-  preset_engine?: string;
-  preset_voice_id?: string;
-  design_prompt?: string;
-  default_engine?: string;
-  /** Free-form character prompt used by compose and the `/generate` personality-rewrite path. */
-  personality?: string;
-}
-
-export interface VoiceProfileResponse {
-  id: string;
-  name: string;
-  description?: string;
-  language: string;
-  avatar_path?: string;
-  effects_chain?: EffectConfig[];
-  voice_type: VoiceType;
-  preset_engine?: string;
-  preset_voice_id?: string;
-  design_prompt?: string;
-  default_engine?: string;
-  personality?: string | null;
-  generation_count: number;
-  sample_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Response returned by /profiles/{id}/compose. */
-export interface PersonalityTextResponse {
-  text: string;
-  model_size: string;
-}
-
-export interface PresetVoice {
-  voice_id: string;
-  name: string;
-  gender: 'male' | 'female';
-  language: string;
-}
-
-export interface ProfileSampleCreate {
-  reference_text: string;
-}
-
-export interface ProfileSampleResponse {
-  id: string;
-  profile_id: string;
-  audio_path: string;
-  reference_text: string;
-}
-
-export interface EffectConfig {
-  type: string;
-  enabled: boolean;
-  params: Record<string, number>;
-}
-
-export interface GenerationRequest {
-  profile_id: string;
-  text: string;
-  language: LanguageCode;
-  seed?: number;
-  model_size?: '1.7B' | '0.6B' | '1B' | '3B';
-  engine?:
-    | 'qwen'
-    | 'qwen_custom_voice'
-    | 'qwen_voice_design'
-    | 'luxtts'
-    | 'chatterbox'
-    | 'chatterbox_turbo'
-    | 'tada'
-    | 'kokoro'
-    | 'omnivoice';
-  instruct?: string;
-  /** When true and the profile has a personality prompt, input text is rewritten in-character before TTS. */
-  personality?: boolean;
-  max_chunk_chars?: number;
-  crossfade_ms?: number;
-  normalize?: boolean;
-  effects_chain?: EffectConfig[];
-}
-
-export interface GenerationVersionResponse {
-  id: string;
-  generation_id: string;
-  label: string;
-  audio_path: string;
-  effects_chain?: EffectConfig[];
-  source_version_id?: string;
-  is_default: boolean;
-  created_at: string;
-}
-
-export interface GenerationResponse {
-  id: string;
-  profile_id: string;
-  text: string;
-  language: string;
-  audio_path?: string;
-  duration?: number;
-  seed?: number;
-  instruct?: string;
-  engine?: string;
-  model_size?: string;
-  status: 'loading_model' | 'generating' | 'completed' | 'failed';
-  error?: string;
-  is_favorited?: boolean;
-  created_at: string;
-  versions?: GenerationVersionResponse[];
-  active_version_id?: string;
-}
-
-export interface HistoryQuery {
-  profile_id?: string;
-  search?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export interface HistoryResponse extends GenerationResponse {
-  profile_name: string;
-  versions?: GenerationVersionResponse[];
-  active_version_id?: string;
-}
-
-export interface HistoryListResponse {
-  items: HistoryResponse[];
-  total: number;
-}
-
 export type WhisperModelSize = 'base' | 'small' | 'medium' | 'large' | 'turbo';
 
-export type Qwen3ModelSize = '0.6B' | '1.7B' | '4B';
+export type STTModel = WhisperModelSize | 'parakeet-v3';
 
 export type CaptureSource = 'dictation' | 'recording' | 'file';
 
@@ -164,6 +24,7 @@ export interface RefinementFlags {
 export interface CaptureResponse {
   id: string;
   audio_path: string;
+  audio_available: boolean;
   source: CaptureSource;
   language?: string | null;
   duration_ms?: number | null;
@@ -192,21 +53,12 @@ export interface CaptureCreateResponse extends CaptureResponse {
   allow_auto_paste: boolean;
 }
 
-export interface CaptureRefineRequest {
-  flags?: RefinementFlags;
-  model_size?: Qwen3ModelSize;
-}
-
-export interface CaptureRetranscribeRequest {
-  model?: WhisperModelSize;
-  language?: LanguageCode;
-}
-
 export interface CaptureSettings {
-  stt_model: WhisperModelSize;
+  audio_retention_hours: number;
+  history_retention_days: number;
+  stt_model: STTModel;
   language: string;
   auto_refine: boolean;
-  llm_model: Qwen3ModelSize;
   smart_cleanup: boolean;
   self_correction: boolean;
   preserve_technical: boolean;
@@ -219,30 +71,9 @@ export interface CaptureSettings {
   chord_push_to_talk_keys: string[];
   /** keytap key names. Toggle adds Space to the platform-specific PTT chord. */
   chord_toggle_to_talk_keys: string[];
-  /**
-   * Optional OpenAI-compatible endpoint that overrides the built-in Qwen3
-   * LLM for refinement / personality rewriting. When set, backend calls hit
-   * `POST {custom_llm_endpoint}/chat/completions` with the model named by
-   * ``custom_llm_model``; leaving it null keeps the on-device Qwen path.
-   */
-  custom_llm_endpoint: string | null;
-  custom_llm_model: string | null;
-  /**
-   * Whether a custom LLM API key is currently stored on the server. The raw
-   * key value never rides the response — this flag replaces it — so the
-   * settings UI can show a "Configured" indicator without letting the
-   * frontend rehydrate the secret into state or leak it to a browser cache.
-   * Writes still go through ``CaptureSettingsUpdate.custom_llm_api_key``.
-   */
-  custom_llm_api_key_configured: boolean;
 }
 
-export type CaptureSettingsUpdate = Partial<
-  Omit<CaptureSettings, 'custom_llm_api_key_configured'>
-> & {
-  /** Write-only: setting this to a non-empty string stores it, ``null`` clears it. */
-  custom_llm_api_key?: string | null;
-};
+export type CaptureSettingsUpdate = Partial<CaptureSettings>;
 
 /**
  * One row in the dictation readiness checklist. ``model_name`` is the
@@ -261,26 +92,6 @@ export interface ModelReadiness {
  *  with TCC permission state into the full checklist used by useDictationReadiness. */
 export interface CaptureReadinessResponse {
   stt: ModelReadiness;
-  llm: ModelReadiness;
-}
-
-export interface GenerationSettings {
-  max_chunk_chars: number;
-  crossfade_ms: number;
-  normalize_audio: boolean;
-  autoplay_on_generate: boolean;
-}
-
-export type GenerationSettingsUpdate = Partial<GenerationSettings>;
-
-export interface TranscriptionRequest {
-  language?: LanguageCode;
-  model?: WhisperModelSize;
-}
-
-export interface TranscriptionResponse {
-  text: string;
-  duration: number;
 }
 
 export interface HealthResponse {
@@ -293,61 +104,7 @@ export interface HealthResponse {
   vram_used_mb?: number;
   backend_type?: string;
   backend_variant?: string; // "cpu", "cuda", or "rocm"
-  supports_rocm?: boolean; // AMD GPU on Windows or Linux (/dev/kfd) — the ROCm backend is applicable
-  cloud_enabled?: boolean; // VOICEBOX_CLOUD_ENABLED on the backend — show the Cloud section
-}
-
-export interface CudaDownloadProgress {
-  model_name: string;
-  current: number;
-  total: number;
-  progress: number;
-  filename?: string;
-  status: 'downloading' | 'extracting' | 'complete' | 'error';
-  timestamp: string;
-  error?: string;
-}
-
-export interface CudaStatus {
-  available: boolean; // CUDA binary exists on disk
-  active: boolean; // Currently running the CUDA binary
-  binary_path: string | null;
-  cuda_libs_version: string | null;
-  download_supported: boolean; // Platform has a matching release asset
-  unsupported_reason: string | null;
-  downloading: boolean; // Download in progress
-  download_progress?: CudaDownloadProgress;
-}
-
-export interface RocmDownloadProgress {
-  model_name: string;
-  current: number;
-  total: number;
-  progress: number;
-  filename?: string;
-  status: 'downloading' | 'extracting' | 'complete' | 'error';
-  timestamp: string;
-  error?: string;
-}
-
-export interface RocmStatus {
-  available: boolean; // ROCm binary exists on disk
-  active: boolean; // Currently running the ROCm binary
-  binary_path?: string;
-  rocm_libs_version?: string;
-  downloading: boolean; // Download in progress
-  download_progress?: RocmDownloadProgress;
-}
-
-export interface ModelProgress {
-  model_name: string;
-  current: number;
-  total: number;
-  progress: number;
-  filename?: string;
-  status: 'downloading' | 'extracting' | 'complete' | 'error';
-  timestamp: string;
-  error?: string;
+  supports_rocm?: boolean; // AMD GPU on Windows — the ROCm backend is applicable
 }
 
 export interface ModelStatus {
@@ -360,230 +117,10 @@ export interface ModelStatus {
   loaded: boolean;
 }
 
-export interface HuggingFaceModelInfo {
-  id: string;
-  author: string;
-  lastModified: string;
-  pipeline_tag?: string;
-  library_name?: string;
-  downloads: number;
-  likes: number;
-  tags: string[];
-  cardData?: {
-    license?: string;
-    language?: string[];
-    pipeline_tag?: string;
-  };
-}
-
 export interface ModelStatusListResponse {
   models: ModelStatus[];
 }
 
 export interface ModelDownloadRequest {
   model_name: string;
-}
-
-export interface ActiveDownloadTask {
-  model_name: string;
-  status: string;
-  started_at: string;
-  error?: string;
-  progress?: number; // 0-100 percentage
-  current?: number; // bytes downloaded
-  total?: number; // total bytes
-  filename?: string; // current file being downloaded
-}
-
-export interface ActiveGenerationTask {
-  task_id: string;
-  profile_id: string;
-  text_preview: string;
-  started_at: string;
-}
-
-export interface ActiveTasksResponse {
-  downloads: ActiveDownloadTask[];
-  generations: ActiveGenerationTask[];
-}
-
-export interface StoryCreate {
-  name: string;
-  description?: string;
-}
-
-export interface StoryResponse {
-  id: string;
-  name: string;
-  description?: string;
-  created_at: string;
-  updated_at: string;
-  item_count: number;
-}
-
-export type GenerationExportFormat = 'wav' | 'mp3';
-export type StoryExportFormat = 'wav' | 'mp3' | 'm4b';
-
-export interface StoryItemDetail {
-  id: string;
-  story_id: string;
-  generation_id: string;
-  version_id?: string;
-  start_time_ms: number;
-  track: number;
-  trim_start_ms: number;
-  trim_end_ms: number;
-  created_at: string;
-  profile_id: string;
-  profile_name: string;
-  text: string;
-  language: string;
-  audio_path: string;
-  duration: number;
-  seed?: number;
-  instruct?: string;
-  engine?: string;
-  volume: number;
-  generation_created_at: string;
-  versions?: GenerationVersionResponse[];
-  active_version_id?: string;
-}
-
-export interface StoryItemVolumeUpdate {
-  volume: number;
-}
-
-export interface StoryItemVersionUpdate {
-  version_id: string | null;
-}
-
-export interface StoryDetailResponse {
-  id: string;
-  name: string;
-  description?: string;
-  created_at: string;
-  updated_at: string;
-  items: StoryItemDetail[];
-}
-
-export interface StoryItemCreate {
-  generation_id: string;
-  start_time_ms?: number;
-  track?: number;
-}
-
-export interface StoryItemUpdateTime {
-  generation_id: string;
-  start_time_ms: number;
-}
-
-export interface StoryItemBatchUpdate {
-  updates: StoryItemUpdateTime[];
-}
-
-export interface StoryItemReorder {
-  generation_ids: string[];
-}
-
-export interface StoryItemMove {
-  start_time_ms: number;
-  track: number;
-}
-
-export interface StoryItemTrim {
-  trim_start_ms: number;
-  trim_end_ms: number;
-}
-
-export interface StoryItemSplit {
-  split_time_ms: number;
-}
-
-// Effects
-
-export interface EffectPresetResponse {
-  id: string;
-  name: string;
-  description?: string;
-  effects_chain: EffectConfig[];
-  is_builtin: boolean;
-  created_at: string;
-}
-
-export interface EffectPresetCreate {
-  name: string;
-  description?: string;
-  effects_chain: EffectConfig[];
-}
-
-export interface EffectPresetUpdate {
-  name?: string;
-  description?: string;
-  effects_chain?: EffectConfig[];
-}
-
-export interface AvailableEffectParam {
-  default: number;
-  min: number;
-  max: number;
-  step: number;
-  description: string;
-}
-
-export interface AvailableEffect {
-  type: string;
-  label: string;
-  description: string;
-  params: Record<string, AvailableEffectParam>;
-}
-
-export interface AvailableEffectsResponse {
-  effects: AvailableEffect[];
-}
-
-export interface ApplyEffectsRequest {
-  effects_chain: EffectConfig[];
-  source_version_id?: string;
-  label?: string;
-  set_as_default?: boolean;
-}
-
-/* ─── MCP ─────────────────────────────────────────────────────────────── */
-
-export interface MCPClientBinding {
-  client_id: string;
-  label: string | null;
-  profile_id: string | null;
-  default_engine: string | null;
-  default_personality: boolean;
-  last_seen_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface MCPClientBindingUpsert {
-  client_id: string;
-  label?: string | null;
-  profile_id?: string | null;
-  default_engine?: string | null;
-  default_personality?: boolean;
-}
-
-export interface MCPClientBindingListResponse {
-  items: MCPClientBinding[];
-}
-
-/* ─── Cloud (backup & sync) ───────────────────────────────────────────── */
-
-export interface CloudLoginStartResponse {
-  authorize_url: string;
-}
-
-export interface CloudStatus {
-  connected: boolean;
-  device_name: string | null;
-  account_user_id: string | null;
-  key_prefix: string | null;
-  connected_at: string | null;
-  dashboard_url: string;
 }

@@ -10,13 +10,14 @@ echo "Building Voicebox sidecars for platform: $PLATFORM"
 
 # Build Python binary
 # Resolve PATH to absolute paths before changing directory
-export PATH="$(cd "$(dirname "$0")/.." && pwd)/backend/venv/bin:$PATH"
-cd backend
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON="${VOICEBOX_PYTHON:-$ROOT_DIR/backend/venv/bin/python}"
+cd "$ROOT_DIR/backend"
 
 # Check if PyInstaller is installed
-if ! python -c "import PyInstaller" 2>/dev/null; then
+if ! "$PYTHON" -c "import PyInstaller" 2>/dev/null; then
     echo "Installing PyInstaller..."
-    python -m pip install pyinstaller
+    "$PYTHON" -m pip install pyinstaller
 fi
 
 # Create binaries directory if it doesn't exist
@@ -38,10 +39,7 @@ copy_sidecar() {
     fi
 }
 
-python build_binary.py
+"$PYTHON" build_binary.py
 copy_sidecar voicebox-server
-
-python build_binary.py --shim
-copy_sidecar voicebox-mcp
 
 echo "Build complete!"

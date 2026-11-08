@@ -1,9 +1,2 @@
-uvicorn
-fastapi
-sqlalchemy
-torch
-torchvision
-soundfile
-librosa
-python-multipart
-huggingface_hub
+-r backend/requirements.txt
+-r backend/requirements-mlx.txt

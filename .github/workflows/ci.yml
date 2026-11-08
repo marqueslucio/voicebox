@@ -19,8 +19,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Typecheck app + web
+      - name: Typecheck dictation app
         run: bun run typecheck
 
-      - name: Build web smoke test
-        run: bun run build:web
+      - name: Test dictation helpers
+        run: bun test app/src
+
+      - name: Build dictation frontend
+        run: bun run --cwd tauri build

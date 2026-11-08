@@ -2,8 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod accessibility;
-mod audio_capture;
-mod audio_output;
 mod clipboard;
 mod focus_capture;
 #[cfg(desktop)]
@@ -12,13 +10,11 @@ mod input_monitoring;
 #[cfg(desktop)]
 mod key_codes;
 mod keyboard_layout;
-mod speak_monitor;
 mod synthetic_keys;
 
 use std::sync::Mutex;
 use tauri::{command, State, Manager, WindowEvent, Emitter, Listener, RunEvent, WebviewUrl, WebviewWindowBuilder, PhysicalPosition};
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::mpsc;
 
 pub const DICTATE_WINDOW_LABEL: &str = "dictate";
 const DICTATE_WINDOW_WIDTH: f64 = 420.0;
@@ -49,28 +45,80 @@ fn build_dictate_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
     .visible(false)
     .build()?;
 
-    if let Some(monitor) = window.current_monitor()? {
-        let monitor_size = monitor.size();
-        let win_size = window.outer_size()?;
-        let x = (monitor_size.width as i32 - win_size.width as i32) / 2;
-        let y = (monitor_size.height as f64 * 0.04) as i32;
-        window.set_position(PhysicalPosition::new(x, y))?;
+    if let Some(monitor) = pill_monitor(&window) {
+        window.set_position(pill_position(&monitor))?;
     }
 
     Ok(window)
 }
 
-/// Position, undo click-through, and show the dictate pill window.
+/// Fraction of the monitor height kept as padding between the pill and
+/// the bottom screen edge.
+#[cfg(desktop)]
+const PILL_BOTTOM_MARGIN_FRAC: f64 = 0.05;
+
+/// Monitor the pill should appear on: the one under the cursor — the
+/// user's locus of attention when the chord fires — falling back to the
+/// window's monitor, then the primary. The pill parks at
+/// (-10_000, -10_000) between cycles, so `current_monitor()` alone is
+/// usually `None`; before this helper everything collapsed to the primary
+/// monitor, which computed the position against the wrong display's
+/// bounds on multi-monitor setups and dropped the pill at a seemingly
+/// random spot.
+#[cfg(desktop)]
+pub(crate) fn pill_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let app = window.app_handle();
+    if let Ok(pos) = app.cursor_position() {
+        if let Ok(Some(monitor)) = app.monitor_from_point(pos.x, pos.y) {
+            return Some(monitor);
+        }
+    }
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+}
+
+/// Where the dictate pill sits: horizontally centered, near the bottom of
+/// the monitor with a small margin. Shared by every code path that
+/// repositions the pill so recording, agent speech, and rebuilds all land
+/// on the same spot.
 ///
-/// The hide path parks the window at (-10_000, -10_000) and toggles
-/// `ignore_cursor_events(true)` so invisible click targets don't leak; we
-/// undo both here. Mirrors the logic the hotkey_monitor's
-/// `Effect::StartRecording` path runs, minus the focus snapshot — this is
-/// for agent-initiated speech, not dictation, so there's no focused text
-/// field to paste into.
-/// Build the pill webview if it doesn't exist yet. Idempotent — used by
-/// agent-speech to prime the webview on speak-start so its listeners can
-/// register before the actual show arrives from `audio.onplaying`.
+/// Computed and applied in LOGICAL coordinates. Physical positions are
+/// ambiguous across monitors with different scale factors: tao converts a
+/// `PhysicalPosition` to points using the *window's* current scale, so a
+/// pill parked near the built-in Retina display (scale 2) targeting an
+/// external scale-1 monitor got every coordinate halved — landing
+/// left-of-center at mid-height instead of bottom-center. macOS global
+/// screen space is natively in points, so logical coordinates derived
+/// from the target monitor's own scale factor are exact. The window size
+/// is the logical `DICTATE_WINDOW_*` constants — the pill is undecorated,
+/// so inner == outer.
+#[cfg(desktop)]
+pub(crate) fn pill_position(monitor: &tauri::Monitor) -> tauri::LogicalPosition<f64> {
+    let scale = monitor.scale_factor();
+    let pos = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    let x = pos.x + (size.width - DICTATE_WINDOW_WIDTH) / 2.0;
+    let y = pos.y + size.height
+        - DICTATE_WINDOW_HEIGHT
+        - size.height * PILL_BOTTOM_MARGIN_FRAC;
+    tauri::LogicalPosition::new(x, y)
+}
+
+/// Restore the main window from the menu-bar tray: bring the Dock icon
+/// back (Regular activation policy), then show and focus the window.
+#[cfg(desktop)]
+fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg(desktop)]
 pub fn ensure_dictate_window(app: &tauri::AppHandle) {
     if app.get_webview_window(DICTATE_WINDOW_LABEL).is_none() {
@@ -80,48 +128,10 @@ pub fn ensure_dictate_window(app: &tauri::AppHandle) {
     }
 }
 
-#[cfg(desktop)]
-pub fn show_dictate_window(app: &tauri::AppHandle) {
-    // Build on demand so agent-initiated speech works before the user has
-    // enabled the global hotkey (the hotkey path is the other place this
-    // window gets built, see `enable_hotkey`).
-    let window = match app.get_webview_window(DICTATE_WINDOW_LABEL) {
-        Some(w) => w,
-        None => match build_dictate_window(app) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("show_dictate_window: failed to build pill window: {e}");
-                return;
-            }
-        },
-    };
-    // current_monitor() returns None when the window has been parked
-    // off any display by the hide path; fall back to the primary.
-    let monitor = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.primary_monitor().ok().flatten());
-    if let Some(monitor) = monitor {
-        let monitor_pos = monitor.position();
-        let monitor_size = monitor.size();
-        if let Ok(win_size) = window.outer_size() {
-            let x = monitor_pos.x
-                + (monitor_size.width as i32 - win_size.width as i32) / 2;
-            let y = monitor_pos.y + (monitor_size.height as f64 * 0.04) as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-        }
-    }
-    // Skip on Linux: tao's CursorIgnoreEvents handler unwraps the GdkWindow,
-    // which is None until the window is first shown, aborting the process.
-    // The click-through toggle is a macOS workaround and is never set on Linux.
-    #[cfg(not(target_os = "linux"))]
-    let _ = window.set_ignore_cursor_events(false);
-    let _ = window.show();
-}
-
-const LEGACY_PORT: u16 = 8000;
-pub(crate) const SERVER_PORT: u16 = 17493;
+#[cfg(feature = "dev-isolation")]
+pub(crate) const SERVER_PORT: u16 = 17494;
+#[cfg(not(feature = "dev-isolation"))]
+pub(crate) const SERVER_PORT: u16 = 17495;
 
 /// Find a voicebox-server process listening on a given port (Windows only).
 ///
@@ -283,128 +293,12 @@ async fn start_server(
         return Ok(format!("http://127.0.0.1:{}", SERVER_PORT));
     }
 
-    // Check if a voicebox server is already running on our port (from previous session with keep_running=true,
-    // or an externally started server e.g. via `python`, `uvicorn`, Docker, etc.)
-    #[cfg(unix)]
-    {
-        use std::process::Command;
-        if let Ok(output) = Command::new("lsof")
-            .args(["-i", &format!(":{}", SERVER_PORT), "-sTCP:LISTEN"])
-            .output()
-        {
-            let output_str = String::from_utf8_lossy(&output.stdout);
-            for line in output_str.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let command = parts[0];
-                    let pid_str = parts[1];
-                    if command.contains("voicebox") {
-                        if let Ok(pid) = pid_str.parse::<u32>() {
-                            println!("Found existing voicebox-server on port {} (PID: {}), reusing it", SERVER_PORT, pid);
-                            // Store the PID so we can kill it on exit if needed
-                            *state.server_pid.lock().unwrap() = Some(pid);
-                            return Ok(format!("http://127.0.0.1:{}", SERVER_PORT));
-                        }
-                    } else {
-                        // Process name doesn't contain "voicebox" — could be an external
-                        // Python/uvicorn/Docker server. Verify via HTTP health check.
-                        println!("Port {} in use by '{}' (PID: {}), checking if it's a Voicebox server...", SERVER_PORT, command, pid_str);
-                        if check_health(SERVER_PORT) {
-                            println!("Health check passed — reusing external server on port {}", SERVER_PORT);
-                            return Ok(format!("http://127.0.0.1:{}", SERVER_PORT));
-                        }
-                        println!("Health check failed — port is occupied by a non-Voicebox process");
-                        return Err(format!(
-                            "Port {} is already in use by another application ({}). \
-                             Close it or change the Voicebox server port.",
-                            SERVER_PORT, command
-                        ));
-                    }
-                }
-            }
-        }
+    if std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{}", SERVER_PORT).parse().unwrap(),
+        std::time::Duration::from_millis(250),
+    ).is_ok() {
+        return Err(format!("Port {} is already in use. Close the application using it and retry.", SERVER_PORT));
     }
-    
-    #[cfg(windows)]
-    {
-        use std::net::TcpStream;
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{}", SERVER_PORT).parse().unwrap(),
-            std::time::Duration::from_secs(1),
-        ).is_ok() {
-            // Port is in use — check if it's a voicebox process by name first
-            if let Some(pid) = find_voicebox_pid_on_port(SERVER_PORT) {
-                println!("Found existing voicebox-server on port {} (PID: {}), reusing it", SERVER_PORT, pid);
-                *state.server_pid.lock().unwrap() = Some(pid);
-                return Ok(format!("http://127.0.0.1:{}", SERVER_PORT));
-            }
-            // Process name doesn't match — could be an external Python/Docker server.
-            // Verify via HTTP health check before giving up.
-            println!("Port {} in use by unknown process, checking if it's a Voicebox server...", SERVER_PORT);
-            if check_health(SERVER_PORT) {
-                println!("Health check passed — reusing external server on port {}", SERVER_PORT);
-                return Ok(format!("http://127.0.0.1:{}", SERVER_PORT));
-            }
-            return Err(format!(
-                "Port {} is already in use by another application. \
-                 Close the other application or change the Voicebox port.",
-                SERVER_PORT
-            ));
-        }
-    }
-
-    // Kill any orphaned voicebox-server from previous session on legacy port 8000
-    // This handles upgrades from older versions that used a fixed port
-    #[cfg(unix)]
-    {
-        use std::process::Command;
-        if let Ok(output) = Command::new("lsof")
-            .args(["-i", &format!(":{}", LEGACY_PORT), "-sTCP:LISTEN"])
-            .output()
-        {
-            let output_str = String::from_utf8_lossy(&output.stdout);
-            for line in output_str.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let command = parts[0];
-                    let pid_str = parts[1];
-                    
-                    if command.contains("voicebox") {
-                        if let Ok(pid) = pid_str.parse::<i32>() {
-                            println!("Found orphaned voicebox-server on legacy port {} (PID: {}, CMD: {}), killing it...", LEGACY_PORT, pid, command);
-                            let _ = Command::new("kill")
-                                .args(["-9", "--", &format!("-{}", pid)])
-                                .output();
-                            let _ = Command::new("kill")
-                                .args(["-9", &pid.to_string()])
-                                .output();
-                        }
-                    } else {
-                        println!("Legacy port {} is in use by non-voicebox process: {} (PID: {}), not killing", LEGACY_PORT, command, pid_str);
-                    }
-                }
-            }
-        }
-    }
-    
-    #[cfg(windows)]
-    {
-        use std::net::TcpStream;
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{}", LEGACY_PORT).parse().unwrap(),
-            std::time::Duration::from_secs(1),
-        ).is_ok() {
-            if let Some(pid) = find_voicebox_pid_on_port(LEGACY_PORT) {
-                println!("Found orphaned voicebox-server on legacy port {} (PID: {}), killing it...", LEGACY_PORT, pid);
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .output();
-            }
-        }
-    }
-    
-    // Brief wait for port to be released
-    std::thread::sleep(std::time::Duration::from_millis(200));
 
     // Get app data directory
     let data_dir = app
@@ -924,49 +818,6 @@ fn set_backend_override(
     *state.backend_override.lock().unwrap() = backend;
 }
 
-#[command]
-async fn start_system_audio_capture(
-    state: State<'_, audio_capture::AudioCaptureState>,
-    max_duration_secs: u32,
-) -> Result<(), String> {
-    audio_capture::start_capture(&state, max_duration_secs).await
-}
-
-#[command]
-async fn stop_system_audio_capture(
-    state: State<'_, audio_capture::AudioCaptureState>,
-) -> Result<String, String> {
-    audio_capture::stop_capture(&state).await
-}
-
-#[command]
-fn is_system_audio_supported() -> bool {
-    audio_capture::is_supported()
-}
-
-#[command]
-fn list_audio_output_devices(
-    state: State<'_, audio_output::AudioOutputState>,
-) -> Result<Vec<audio_output::AudioOutputDevice>, String> {
-    state.list_output_devices()
-}
-
-#[command]
-async fn play_audio_to_devices(
-    state: State<'_, audio_output::AudioOutputState>,
-    audio_data: Vec<u8>,
-    device_ids: Vec<String>,
-) -> Result<(), String> {
-    state.play_audio_to_devices(audio_data, device_ids).await
-}
-
-#[command]
-fn stop_audio_playback(
-    state: State<'_, audio_output::AudioOutputState>,
-) -> Result<(), String> {
-    state.stop_all_playback()
-}
-
 /// Identifier of the Voicebox app itself — used to short-circuit auto-paste
 /// when the user fires a chord while focus was inside one of our own
 /// windows. Paste into Voicebox-internal targets is step 6 territory and
@@ -986,12 +837,6 @@ const VOICEBOX_BUNDLE_ID: &str = "voicebox";
 /// synthetic ⌘V, giving AppKit time to finish re-ordering windows and
 /// restoring its last-focused field.
 const POST_ACTIVATE_SETTLE_MS: u64 = 120;
-
-/// Milliseconds the staged text lives on the clipboard after the paste
-/// keystroke, before we restore the user's original clipboard contents.
-/// Too short and slow apps haven't consumed the paste yet; too long and
-/// the user sees our text if they look at their clipboard manager.
-const PASTE_CONSUME_MS: u64 = 400;
 
 /// Reports whether the process currently has macOS Accessibility trust.
 /// Used by the settings UI and the paste debug harness to decide whether
@@ -1182,42 +1027,18 @@ fn open_input_monitoring_settings(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-/// Deliver `text` into the UI that had focus when the chord fired.
-///
-/// Pipeline: activate the captured PID → settle → save the user's
-/// clipboard → write `text` → fire ⌘V → wait for the target to consume it
-/// → conditionally restore the original clipboard.
-///
-/// The restore is conditional on `NSPasteboard.changeCount` (or the
-/// Windows sequence number) matching the value captured right after
-/// `write_text`: if something else wrote to the clipboard during the
-/// paste-consume window — the user's own ⌘C in the target app, a
-/// clipboard history tool (Paste, Pastebot, Maccy), Universal Clipboard
-/// sync, 1Password inserting a secret — their newer content takes
-/// priority over our snapshot and is preserved. A
-/// [`clipboard::current_change_count`] read failure is treated the same
-/// way: unknown state is safer than an unconditional overwrite.
-///
-/// `send_paste` failure is isolated from the restore decision: we always
-/// attempt the conditional restore before propagating the paste error,
-/// so a failed `CGEventPost` / `SendInput` never leaves the user's
-/// clipboard stuck on the transcript.
-///
-/// Skips (returns `false`) without touching anything when:
-/// - `focus.bundle_id` is Voicebox itself — step 6 will inject directly
-///   into our own webview; pasting would just double-insert or miss the
-///   real target.
-/// - Accessibility is not trusted — `CGEventPost` would silently drop the
-///   keystroke, leaving the user's clipboard clobbered with nothing to
-///   show for it.
-///
-/// Returns `true` when the paste sequence completed end-to-end.
+/// Copy every completed dictation first, then optionally paste it into the
+/// previously focused application. A failed activation or paste must never
+/// remove the transcript from the clipboard.
 #[command]
 async fn paste_final_text(
     text: String,
-    focus: focus_capture::FocusSnapshot,
+    focus: Option<focus_capture::FocusSnapshot>,
+    allow_auto_paste: bool,
 ) -> Result<bool, String> {
-    if focus.bundle_id.as_deref() == Some(VOICEBOX_BUNDLE_ID) {
+    clipboard::write_text(&text)?;
+    let Some(focus) = focus else { return Ok(false) };
+    if !allow_auto_paste || focus.bundle_id.as_deref() == Some(VOICEBOX_BUNDLE_ID) {
         return Ok(false);
     }
     if !accessibility::is_trusted() {
@@ -1226,29 +1047,9 @@ async fn paste_final_text(
                 .into(),
         );
     }
-
     focus_capture::activate_pid(focus.pid)?;
     tokio::time::sleep(std::time::Duration::from_millis(POST_ACTIVATE_SETTLE_MS)).await;
-
-    let snapshot = clipboard::save_clipboard()?;
-    let after_write = clipboard::write_text(&text)?;
-
-    let paste_result = synthetic_keys::send_paste();
-    tokio::time::sleep(std::time::Duration::from_millis(PASTE_CONSUME_MS)).await;
-
-    let safe_to_restore = matches!(
-        clipboard::current_change_count(),
-        Ok(current) if current == after_write
-    );
-    if safe_to_restore {
-        clipboard::restore_clipboard(&snapshot)?;
-    } else {
-        eprintln!(
-            "[voicebox] clipboard mutated during paste window — skipping restore to preserve newer content"
-        );
-    }
-
-    paste_result?;
+    synthetic_keys::send_paste()?;
     Ok(true)
 }
 
@@ -1379,28 +1180,9 @@ async fn debug_clipboard_roundtrip(
     }))
 }
 
-/// Final step of the main-window close flow, after the frontend has had its
-/// chance to stop the server.
-///
-/// On Linux, closing the main window must exit the process: the hidden dictate
-/// pill webview is still a window, so Tauri would otherwise keep running with
-/// no UI, the backend already stopped, and `speak_monitor` retrying
-/// `/events/speak` every 30 s (#1040). On macOS and Windows the window just
-/// closes, as before, so "Keep server running" plus the global hotkey keep
-/// dictation available without the main window.
-fn finish_main_window_close(window: &tauri::Window) {
-    if cfg!(target_os = "linux") {
-        window.app_handle().exit(0);
-    } else {
-        window.close().ok();
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(ServerState {
             child: Mutex::new(None),
@@ -1409,13 +1191,53 @@ pub fn run() {
             models_dir: Mutex::new(None),
             backend_override: Mutex::new(None),
         })
-        .manage(audio_capture::AudioCaptureState::new())
-        .manage(audio_output::AudioOutputState::new())
         .setup(|app| {
             #[cfg(desktop)]
             {
-                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
-                app.handle().plugin(tauri_plugin_process::init())?;
+
+                // Menu-bar tray: closing the main window hides the app to
+                // the tray (no Dock icon) instead of quitting — server and
+                // global hotkey keep running, so dictation works without
+                // the window. Left click or "Open" restores the window.
+                {
+                    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+                    let open_item = MenuItemBuilder::with_id("open", "Open Voicebox").build(app)?;
+                    let quit_item = MenuItemBuilder::with_id("quit", "Quit Voicebox").build(app)?;
+                    let menu = MenuBuilder::new(app).item(&open_item).item(&quit_item).build()?;
+
+                    TrayIconBuilder::with_id("voicebox-tray")
+                        .icon(
+                            app.default_window_icon()
+                                .cloned()
+                                .expect("bundled app icon missing"),
+                        )
+                        // Render as a template image: macOS draws the icon's
+                        // alpha channel monochrome, adapting to light/dark
+                        // menu bars. The colored app icon reads as mid-gray
+                        // and disappears against a dark menu bar otherwise.
+                        .icon_as_template(true)
+                        .tooltip("Voicebox")
+                        .menu(&menu)
+                        .show_menu_on_left_click(false)
+                        .on_menu_event(|app, event| match event.id().as_ref() {
+                            "open" => show_main_window(app),
+                            "quit" => app.exit(0),
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } = event
+                            {
+                                show_main_window(tray.app_handle());
+                            }
+                        })
+                        .build(app)?;
+                }
 
                 // Resolve the active keyboard layout's V keycode now, on
                 // the main thread, and register an observer for layout
@@ -1451,20 +1273,7 @@ pub fn run() {
                     }
                 });
 
-                // Agent-initiated speech (voicebox_speak over MCP or POST /speak)
-                // pops the pill up so the user can see what's coming out of their
-                // machine. The `dictate:show` listener is kept for any frontend
-                // caller that wants to force-surface the pill directly, but the
-                // primary source is `speak_monitor` below — Rust subscribes to
-                // the backend /events/speak SSE stream so the pill surfaces even
-                // when no JS window is active.
-                let handle_for_show = app.handle().clone();
-                app.handle().listen("dictate:show", move |_event| {
-                    show_dictate_window(&handle_for_show);
-                });
-
                 ensure_dictate_window(app.handle());
-                speak_monitor::spawn_speak_monitor(app.handle().clone());
             }
 
             // Hide title bar icon on Windows
@@ -1530,12 +1339,6 @@ pub fn run() {
             restart_server,
             set_keep_server_running,
             set_backend_override,
-            start_system_audio_capture,
-            stop_system_audio_capture,
-            is_system_audio_supported,
-            list_audio_output_devices,
-            play_audio_to_devices,
-            stop_audio_playback,
             debug_clipboard_roundtrip,
             debug_paste_text,
             debug_capture_focus,
@@ -1549,58 +1352,41 @@ pub fn run() {
             disable_hotkey,
             update_chord_bindings
         ])
-        .on_window_event({
-            let closing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            move |window, event| {
+        .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // If we're already in the close flow, let it proceed
-                if closing.load(std::sync::atomic::Ordering::SeqCst) {
-                    return;
+                // Closing the main window hides the app to the menu-bar
+                // tray instead of quitting: prevent the close, hide the
+                // window, and drop the Dock icon (Accessory policy). The
+                // sidecar server and the global hotkey keep running, so
+                // dictation stays available. A real quit goes through the
+                // tray's "Quit" or Cmd+Q, where RunEvent::Exit handles the
+                // server shutdown / keep-running logic. This replaced the
+                // old frontend close-handshake ("window-close-requested" /
+                // "window-close-allowed"), which is unreachable now that
+                // the X button never actually closes.
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    #[cfg(target_os = "macos")]
+                    let _ = window
+                        .app_handle()
+                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
-                closing.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                // Prevent automatic close so frontend can clean up
-                api.prevent_close();
-
-                // Emit event to frontend to check setting and stop server if needed
-                let app_handle = window.app_handle();
-
-                if let Err(e) = app_handle.emit("window-close-requested", ()) {
-                    eprintln!("Failed to emit window-close-requested event: {}", e);
-                    finish_main_window_close(window);
-                    return;
-                }
-
-                // Set up listener for frontend response
-                let window_for_close = window.clone();
-                let closing_for_timeout = closing.clone();
-                let (tx, mut rx) = mpsc::unbounded_channel::<()>();
-
-                let listener_id = window.listen("window-close-allowed", move |_| {
-                    let _ = tx.send(());
-                });
-
-                tauri::async_runtime::spawn(async move {
-                    tokio::select! {
-                        _ = rx.recv() => {
-                            println!("Frontend cleanup complete, closing");
-                            finish_main_window_close(&window_for_close);
-                        }
-                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-                            eprintln!("Window close timeout, closing anyway");
-                            finish_main_window_close(&window_for_close);
-                        }
-                    }
-                    window_for_close.unlisten(listener_id);
-                    closing_for_timeout.store(false, std::sync::atomic::Ordering::SeqCst);
-                });
             }
-        }})
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             let _ = &app; // used on unix
             match &event {
+                // macOS sends Reopen when the running app is activated
+                // again — Spotlight launch, Dock click, `open -a`. With the
+                // main window hidden to the tray this is the user's "bring
+                // it back" gesture, so restore window + Dock icon.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen { .. } => {
+                    show_main_window(app);
+                }
                 RunEvent::Exit => {
                     let state = app.state::<ServerState>();
                     let keep_running = *state.keep_running_on_close.lock().unwrap();

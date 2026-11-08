@@ -110,60 +110,8 @@ def get_db_path() -> Path:
     return _data_dir / "voicebox.db"
 
 
-def get_profiles_dir() -> Path:
-    """Get profiles directory path."""
-    path = _data_dir / "profiles"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def get_generations_dir() -> Path:
-    """Get generations directory path."""
-    path = _data_dir / "generations"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def get_captures_dir() -> Path:
     """Get captures directory path."""
     path = _data_dir / "captures"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def get_cache_dir() -> Path:
-    """Get cache directory path."""
-    path = _data_dir / "cache"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def get_models_dir() -> Path:
-    """Get models directory path."""
-    path = _data_dir / "models"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-# Voicebox Cloud (backup & sync). Two hosts: the web app owns auth + device
-# pairing (voicebox.sh), the API owns sync + account endpoints
-# (api.voicebox.sh). Override both for local development, e.g.
-# VOICEBOX_CLOUD_URL=http://localhost:17592 VOICEBOX_CLOUD_API_URL=http://localhost:17593
-def get_cloud_web_url() -> str:
-    """Base URL of the Voicebox Cloud web app (auth + /connect + exchange)."""
-    return os.environ.get("VOICEBOX_CLOUD_URL", "https://voicebox.sh").rstrip("/")
-
-
-def get_cloud_api_url() -> str:
-    """Base URL of the Voicebox Cloud API (bearer-authenticated sync/account)."""
-    return os.environ.get("VOICEBOX_CLOUD_API_URL", "https://api.voicebox.sh").rstrip("/")
-
-
-# Cloud is off by default until the service is deployed. VOICEBOX_CLOUD_ENABLED=1
-# (or true/yes/on) turns on the /cloud routes and the Settings → General section;
-# the desktop sidecar inherits the launcher's environment, so the same variable
-# works for a shipped build without a rebuild. Read per request, not at import,
-# so a test or a long-lived process sees the current value.
-def is_cloud_enabled() -> bool:
-    """Whether Voicebox Cloud login/sync is enabled for this backend."""
-    return os.environ.get("VOICEBOX_CLOUD_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")

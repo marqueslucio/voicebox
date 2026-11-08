@@ -7,7 +7,6 @@ absolute imports instead of relative imports.
 
 import sys
 import os
-import re
 
 # On Windows with --noconsole (PyInstaller), sys.stdout/stderr are None.
 # They can also be broken file objects in some edge cases.
@@ -22,45 +21,41 @@ def _is_writable(stream):
     except Exception:
         return False
 
-if not _is_writable(sys.stdout):
-    sys.stdout = open(os.devnull, 'w')
-if not _is_writable(sys.stderr):
-    sys.stderr = open(os.devnull, 'w')
-
-
 class _PipeSafeStream:
-    """Falls back to devnull once the pipe to the Tauri app is gone.
+    """Stream wrapper that swallows EPIPE at write time.
 
-    The app reads our stdout/stderr through a pipe. When the server outlives
-    it (keep-running mode, or a sidecar the next launch reuses), every later
-    print()/tqdm write raises "[Errno 32] Broken pipe" and fails whatever
-    request triggered it, e.g. POST /captures.
+    The parent Tauri app owns our stdout/stderr pipes. When it exits —
+    keep-server-running mode, or the window before the parent watchdog
+    reacts — those pipes close, and the next progress-bar or log write
+    raises BrokenPipeError straight into whatever request handler
+    triggered it (surfaces as "[Errno 32] Broken pipe" during Whisper
+    model load). A dead log pipe is not an actionable error; drop the
+    write instead of failing the request.
     """
 
     def __init__(self, stream):
         self._stream = stream
 
-    def write(self, s):
+    def write(self, data):
         try:
-            return self._stream.write(s)
-        except (OSError, ValueError):
-            self._stream = open(os.devnull, 'w')
-            return len(s)
-
-    def writelines(self, lines):
-        for line in lines:
-            self.write(line)
+            return self._stream.write(data)
+        except OSError:
+            return len(data)
 
     def flush(self):
         try:
             self._stream.flush()
-        except (OSError, ValueError):
-            self._stream = open(os.devnull, 'w')
+        except OSError:
+            pass
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
 
 
+if not _is_writable(sys.stdout):
+    sys.stdout = open(os.devnull, 'w')
+if not _is_writable(sys.stderr):
+    sys.stderr = open(os.devnull, 'w')
 sys.stdout = _PipeSafeStream(sys.stdout)
 sys.stderr = _PipeSafeStream(sys.stderr)
 
@@ -69,32 +64,12 @@ sys.stderr = _PipeSafeStream(sys.stderr)
 import multiprocessing
 multiprocessing.freeze_support()
 
-# In frozen builds, piper_phonemize's espeak-ng C library falls back to
-# /usr/share/espeak-ng-data/ which doesn't exist.  Point it at the bundled
-# data directory instead.
-if getattr(sys, 'frozen', False):
-    _meipass = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-    _espeak_data = os.path.join(_meipass, 'piper_phonemize', 'espeak-ng-data')
-    if os.path.isdir(_espeak_data):
-        os.environ.setdefault('ESPEAK_DATA_PATH', _espeak_data)
-
 # Fast path: handle --version before any heavy imports so the Rust
 # version check doesn't block for 30+ seconds loading torch etc.
 if "--version" in sys.argv:
     from backend import __version__
     print(f"voicebox-server {__version__}")
     sys.exit(0)
-
-# Detect backend variant from binary name BEFORE importing backend modules
-# so that env-var guards in app.py (e.g. HSA_OVERRIDE_GFX_VERSION) fire at import time.
-_binary_name = os.path.basename(sys.executable).lower()
-if re.search(r"voicebox-server-rocm(\.exe)?$", _binary_name):
-    os.environ["VOICEBOX_BACKEND_VARIANT"] = "rocm"
-elif re.search(r"voicebox-server-cuda(\.exe)?$", _binary_name):
-    os.environ["VOICEBOX_BACKEND_VARIANT"] = "cuda"
-else:
-    os.environ.setdefault("VOICEBOX_BACKEND_VARIANT", "cpu")
-
 
 import logging
 
@@ -291,7 +266,7 @@ if __name__ == "__main__":
             "--data-dir",
             type=str,
             default=None,
-            help="Data directory for database, profiles, and generated audio",
+            help="Data directory for capture database and audio",
         )
         parser.add_argument(
             "--parent-pid",
@@ -311,13 +286,16 @@ if __name__ == "__main__":
 
         logger.info(f"Backend variant: {os.environ.get('VOICEBOX_BACKEND_VARIANT', 'cpu').upper()}")
 
-        # Register parent watchdog to start after server is fully ready
+        # Start the parent watchdog directly. The FastAPI app is built with
+        # an explicit lifespan=..., and FastAPI silently ignores
+        # @app.on_event("startup") handlers once a lifespan is set — the
+        # previous on_event registration never fired in production, so
+        # orphaned servers survived every app restart and later served
+        # requests over dead stdio pipes. The watchdog is a daemon thread
+        # with its own initial liveness check; it does not need the ASGI
+        # app to be ready.
         if args.parent_pid is not None:
-            _parent_pid = args.parent_pid
-            _data_dir = args.data_dir
-            @app.on_event("startup")
-            async def _on_startup():
-                _start_parent_watchdog(_parent_pid, _data_dir)
+            _start_parent_watchdog(args.parent_pid, args.data_dir)
 
         logger.info(f"Parsed arguments: host={args.host}, port={args.port}, data_dir={args.data_dir}")
 

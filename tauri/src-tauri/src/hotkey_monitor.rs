@@ -48,6 +48,11 @@ use crate::DICTATE_WINDOW_LABEL;
 pub enum ChordAction {
     PushToTalk,
     ToggleToTalk,
+    /// Escape. Not user-bindable and never in [`Bindings`] — registered by
+    /// [`build_matcher`] alongside the user's chords so a transcription can
+    /// be abandoned from any app. keytap's tap is observe-only, so the key
+    /// still reaches whatever the user is working in.
+    Cancel,
 }
 
 /// Effect produced after the chord matcher resolves an event. Hosts
@@ -167,6 +172,12 @@ fn build_matcher(bindings: &Bindings) -> Result<ChordMatcher<ChordAction>, keyta
             );
         }
     }
+    // Skip the cancel chord when the user bound Escape themselves — two
+    // chords over the same key set would make the longest-match resolution
+    // ambiguous, and their dictation chord must win.
+    if !bindings.values().any(|keys| keys.contains(&Key::Escape)) {
+        builder = builder.add(ChordAction::Cancel, Chord::of([Key::Escape]));
+    }
     builder.build()
 }
 
@@ -205,8 +216,13 @@ fn process_event(
             // channel hop between keytap's chord worker and our
             // dispatcher.
             match matcher.recv_timeout(Duration::from_millis(5)) {
+                // Never coalesce across the cancel chord — Escape held while
+                // a dictation chord is released is a Stop plus a Cancel, not
+                // a push-to-talk upgrade.
                 Ok(ChordEvent::Start { id: start_id, time: start_time })
-                    if start_time == end_time =>
+                    if start_time == end_time
+                        && end_id != ChordAction::Cancel
+                        && start_id != ChordAction::Cancel =>
                 {
                     apply_effect(app, Effect::RestartRecording(start_id));
                 }
@@ -232,6 +248,15 @@ fn process_event(
 
 fn apply_effect(app: &AppHandle, effect: Effect) {
     match effect {
+        // The cancel chord has no recording semantics: the press asks the
+        // pill to drop an in-flight transcription, the release means nothing.
+        Effect::StartRecording(ChordAction::Cancel) => {
+            if let Some(window) = app.get_webview_window(DICTATE_WINDOW_LABEL) {
+                let _ = window.emit("dictate:cancel", ());
+            }
+        }
+        Effect::StopRecording(ChordAction::Cancel)
+        | Effect::RestartRecording(ChordAction::Cancel) => {}
         Effect::StartRecording(_) => {
             // Snapshot focus BEFORE we touch the window — any AppKit
             // reshuffle triggered by set_position / show could in principle
@@ -242,27 +267,10 @@ fn apply_effect(app: &AppHandle, effect: Effect) {
             if let Some(window) = app.get_webview_window(DICTATE_WINDOW_LABEL) {
                 // The previous hide-cycle parked the window off-screen and
                 // made it click-through — undo both before showing, so the
-                // pill lands at top-center and the user can actually click
-                // the error pill / stop button.
-                //
-                // `current_monitor()` returns None when the window is off
-                // any display (our hide handler parks it at -10_000, -10_000
-                // precisely so it never intercepts clicks), so fall back to
-                // the primary monitor for the reposition.
-                let monitor = window
-                    .current_monitor()
-                    .ok()
-                    .flatten()
-                    .or_else(|| window.primary_monitor().ok().flatten());
-                if let Some(monitor) = monitor {
-                    let monitor_pos = monitor.position();
-                    let monitor_size = monitor.size();
-                    if let Ok(win_size) = window.outer_size() {
-                        let x = monitor_pos.x
-                            + (monitor_size.width as i32 - win_size.width as i32) / 2;
-                        let y = monitor_pos.y + (monitor_size.height as f64 * 0.04) as i32;
-                        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-                    }
+                // pill lands bottom-center on the cursor's monitor and the
+                // user can actually click the error pill / stop button.
+                if let Some(monitor) = crate::pill_monitor(&window) {
+                    let _ = window.set_position(crate::pill_position(&monitor));
                 }
                 // Skip on Linux: aborts if the window was never realized
                 // (see show_dictate_window in main.rs).

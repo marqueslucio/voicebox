@@ -91,6 +91,7 @@ Finalize the changelog draft, bump the version across all tracked files, and cre
    - `package.json`
    - `app/package.json`
    - `tauri/package.json`
+   - `landing/package.json`
    - `web/package.json`
    - `backend/__init__.py`
 

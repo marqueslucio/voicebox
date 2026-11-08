@@ -4,7 +4,10 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy.orm import Session
+
+from ..database import get_db
 
 from .. import models
 from ..services import transcribe
@@ -25,6 +28,7 @@ async def transcribe_audio(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     model: str | None = Form(None),
+    db: Session = Depends(get_db),
 ):
     """Transcribe audio file to text."""
     uploaded_ext = Path(file.filename or "").suffix.lower()
@@ -38,7 +42,7 @@ async def transcribe_audio(
     stt_path = tmp_path
     try:
         from ..utils.audio import load_audio, save_audio
-        from ..backends import WHISPER_HF_REPOS
+        from ..backends import get_stt_model_configs
 
         audio, sr = await asyncio.to_thread(load_audio, tmp_path)
         duration = len(audio) / sr
@@ -55,34 +59,35 @@ async def transcribe_audio(
             await asyncio.to_thread(save_audio, audio, stt_path, sr)
 
         whisper_model = transcribe.get_whisper_model()
-        model_size = model if model else whisper_model.model_size
-
-        valid_sizes = list(WHISPER_HF_REPOS.keys())
+        model_size, language = transcribe.resolve_transcription_settings(model, language, db)
+        stt_configs = {cfg.model_size: cfg for cfg in get_stt_model_configs()}
+        valid_sizes = list(stt_configs)
         if model_size not in valid_sizes:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid model size '{model_size}'. Must be one of: {', '.join(valid_sizes)}",
             )
 
+        whisper_model.validate_language(model_size, language)
         already_loaded = whisper_model.is_loaded() and whisper_model.model_size == model_size
         if not already_loaded and not whisper_model._is_model_cached(model_size):
-            progress_model_name = f"whisper-{model_size}"
+            progress_model_name = stt_configs[model_size].model_name
             task_manager = get_task_manager()
 
             async def download_whisper_background():
                 try:
-                    await whisper_model.load_model_async(model_size)
-                    task_manager.complete_download(progress_model_name)
+                    await whisper_model.load_model_async(model_size, download_task=download_task)
+                    task_manager.complete_download(progress_model_name, download_task)
                 except Exception as e:
-                    task_manager.error_download(progress_model_name, str(e))
+                    task_manager.error_download(progress_model_name, str(e), download_task)
 
-            task_manager.start_download(progress_model_name)
+            download_task = task_manager.start_download(progress_model_name)
             create_background_task(download_whisper_background())
 
             raise HTTPException(
                 status_code=202,
                 detail={
-                    "message": f"Whisper model {model_size} is being downloaded. Please wait and try again.",
+                    "message": f"{stt_configs[model_size].display_name} is being downloaded. Please wait and try again.",
                     "model_name": progress_model_name,
                     "downloading": True,
                 },
@@ -97,8 +102,10 @@ async def transcribe_audio(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
         Path(tmp_path).unlink(missing_ok=True)
         if stt_path != tmp_path:

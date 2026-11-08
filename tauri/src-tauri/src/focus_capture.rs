@@ -169,6 +169,32 @@ unsafe fn bundle_id_for_pid(pid: i32) -> Option<String> {
     ns_string_to_rust(bundle)
 }
 
+/// Snapshot of the frontmost application, used when the AX focused-element
+/// query goes unanswered. `role` stays `None` — it is diagnostic metadata;
+/// activation and paste only need the PID (plus the bundle id for the
+/// own-window guard in `paste_final_text`).
+#[cfg(target_os = "macos")]
+fn frontmost_snapshot() -> Option<FocusSnapshot> {
+    unsafe {
+        let _pool = AutoreleasePool::new();
+        let workspace: Id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
+            return None;
+        }
+        let app: Id = msg_send![workspace, frontmostApplication];
+        if app.is_null() {
+            return None;
+        }
+        let pid: i32 = msg_send![app, processIdentifier];
+        let bundle: Id = msg_send![app, bundleIdentifier];
+        Some(FocusSnapshot {
+            pid,
+            bundle_id: ns_string_to_rust(bundle),
+            role: None,
+        })
+    }
+}
+
 /// Read the system-wide focused UI element's PID, bundle id, and AX role.
 ///
 /// Returns an error when no element is focused (e.g. Dock has focus) or
@@ -198,10 +224,21 @@ pub fn capture_focus() -> Result<FocusSnapshot, String> {
             &mut focused as *mut _,
         );
         if err != AX_ERROR_SUCCESS || focused.is_null() {
-            return Err(format!(
-                "No focused element (AXError {}). Verify Accessibility permission is granted and a focused text field exists.",
-                err
-            ));
+            // Chromium/Electron apps routinely leave this query unanswered:
+            // their AX tree stays dormant until an assistive client
+            // explicitly activates it, so the system-wide focused-element
+            // read fails even though a text field visibly has focus.
+            // Dictation into Slack/Claude/ChatGPT died right here — the
+            // pill saw `focus: null` and silently skipped clipboard + paste
+            // while AppKit targets (TextEdit) worked. The paste pipeline
+            // only needs a PID to re-activate, so fall back to the
+            // frontmost application instead of failing the capture.
+            return frontmost_snapshot().ok_or_else(|| {
+                format!(
+                    "No focused element (AXError {}) and no frontmost application. Verify Accessibility permission is granted.",
+                    err
+                )
+            });
         }
         let _focus_guard = scopeguard::guard(focused, |e| CFRelease(e));
 
@@ -210,7 +247,11 @@ pub fn capture_focus() -> Result<FocusSnapshot, String> {
         let mut pid: Pid = 0;
         let err = AXUIElementGetPid(focused_elem, &mut pid);
         if err != AX_ERROR_SUCCESS {
-            return Err(format!("AXUIElementGetPid failed (AXError {})", err));
+            // Same degraded path as above: a PID-less AX element is useless
+            // to the paste pipeline, but the frontmost app is still a valid
+            // target.
+            return frontmost_snapshot()
+                .ok_or_else(|| format!("AXUIElementGetPid failed (AXError {})", err));
         }
 
         let role = {
