@@ -186,6 +186,7 @@ class HFProgressTracker:
                 # Real downloads have file extensions
                 download_extensions = [
                     ".safetensors",
+                    ".gguf",
                     ".bin",
                     ".pt",
                     ".pth",  # Model weights

@@ -145,6 +145,8 @@ export interface HistoryListResponse {
 
 export type WhisperModelSize = 'base' | 'small' | 'medium' | 'large' | 'turbo';
 
+export type STTModel = WhisperModelSize | 'parakeet-v3';
+
 export type Qwen3ModelSize = '0.6B' | '1.7B' | '4B';
 
 export type CaptureSource = 'dictation' | 'recording' | 'file';
@@ -203,12 +205,12 @@ export interface CaptureRefineRequest {
 }
 
 export interface CaptureRetranscribeRequest {
-  model?: WhisperModelSize;
+  model?: STTModel;
   language?: LanguageCode;
 }
 
 export interface CaptureSettings {
-  stt_model: WhisperModelSize;
+  stt_model: STTModel;
   language: string;
   auto_refine: boolean;
   llm_model: Qwen3ModelSize;
@@ -259,7 +261,7 @@ export type GenerationSettingsUpdate = Partial<GenerationSettings>;
 
 export interface TranscriptionRequest {
   language?: LanguageCode;
-  model?: WhisperModelSize;
+  model?: STTModel;
 }
 
 export interface TranscriptionResponse {

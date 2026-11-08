@@ -84,4 +84,5 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   'whisper-small': 'Whisper Small',
   'whisper-medium': 'Whisper Medium',
   'whisper-large': 'Whisper Large',
+  'parakeet-tdt-0.6b-v3': 'Parakeet v3 (Q8)',
 };

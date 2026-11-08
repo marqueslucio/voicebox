@@ -231,11 +231,16 @@ async def combine_voice_prompts(
     return mixed, combined_text
 
 
+class DownloadCancelled(RuntimeError):
+    """A transfer was explicitly cancelled by its user."""
+
+
 @contextmanager
 def model_load_progress(
     model_name: str,
     is_cached: bool,
     filter_non_downloads: Optional[bool] = None,
+    download_task=None,
 ):
     """
     Context manager for model loading with HF download progress tracking.
@@ -250,8 +255,8 @@ def model_load_progress(
                               Defaults to `is_cached`.
 
     Yields:
-        The tracker context (already entered). The caller loads the model
-        inside the `with` block. The tqdm patch is torn down on exit.
+        A cancellation checker for callers to invoke before creating native handles.
+        The caller loads the model inside the block; tqdm is restored on exit.
 
     Usage:
         with model_load_progress("qwen-tts-1.7B", is_cached) as ctx:
@@ -263,14 +268,26 @@ def model_load_progress(
     progress_manager = get_progress_manager()
     task_manager = get_task_manager()
 
-    progress_callback = create_hf_progress_callback(model_name, progress_manager)
+    if download_task is None and (not is_cached or task_manager.is_download_active(model_name)):
+        download_task = task_manager.start_download(model_name)
+
+    def check_cancelled():
+        if download_task is not None and download_task.cancelled.is_set():
+            raise DownloadCancelled("Model download cancelled")
+
+    check_cancelled()
+    report_progress = create_hf_progress_callback(model_name, progress_manager)
+
+    def progress_callback(current, total, filename=""):
+        check_cancelled()
+        report_progress(current, total, filename)
+
     tracker = HFProgressTracker(progress_callback, filter_non_downloads=filter_non_downloads)
 
     tracker_context = tracker.patch_download()
     tracker_context.__enter__()
 
     if not is_cached:
-        task_manager.start_download(model_name)
         progress_manager.update_progress(
             model_name=model_name,
             current=0,
@@ -280,17 +297,21 @@ def model_load_progress(
         )
 
     try:
-        yield tracker_context
+        check_cancelled()
+        yield check_cancelled
+        check_cancelled()
+    except DownloadCancelled:
+        raise
     except Exception as e:
         # Report error to both managers
         progress_manager.mark_error(model_name, str(e))
-        task_manager.error_download(model_name, str(e))
+        task_manager.error_download(model_name, str(e), download_task)
         raise
     else:
         # Only mark complete if we were tracking a download
         if not is_cached:
             progress_manager.mark_complete(model_name)
-            task_manager.complete_download(model_name)
+            task_manager.complete_download(model_name, download_task)
     finally:
         tracker_context.__exit__(None, None, None)
 

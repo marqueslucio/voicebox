@@ -65,6 +65,7 @@ import type {
   VoiceProfileResponse,
 } from '@/lib/api/types';
 import type { LanguageCode } from '@/lib/constants/languages';
+import { getSTTModelDisplayName } from '@/lib/constants/stt';
 import { BOTTOM_SAFE_AREA_PADDING } from '@/lib/constants/ui';
 import { useCaptureRecordingSession } from '@/lib/hooks/useCaptureRecordingSession';
 import { useDictationReadiness } from '@/lib/hooks/useDictationReadiness';
@@ -556,7 +557,7 @@ export function CapturesTab() {
               <span className="w-1.5 h-1.5 rounded-full bg-accent" />
               <span>
                 {t('captures.header.modelSummary', {
-                  stt: sttModel.charAt(0).toUpperCase() + sttModel.slice(1),
+                  stt: getSTTModelDisplayName(sttModel),
                   llm: llmModel,
                 })}
               </span>
@@ -685,7 +686,9 @@ export function CapturesTab() {
                 {showRefined && selected.transcript_refined
                   ? t('captures.transcript.refinedHint', { model: selected.llm_model ?? llmModel })
                   : selected.stt_model
-                    ? t('captures.transcript.rawHint', { model: selected.stt_model })
+                    ? t('captures.transcript.rawHint', {
+                        model: getSTTModelDisplayName(selected.stt_model),
+                      })
                     : null}
               </span>
             </div>

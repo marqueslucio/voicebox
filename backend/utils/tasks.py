@@ -5,6 +5,7 @@ Task tracking for active downloads and generations.
 from typing import Optional, Dict, List
 from datetime import datetime
 from dataclasses import dataclass, field
+from threading import Event
 
 
 @dataclass
@@ -14,6 +15,7 @@ class DownloadTask:
     status: str = "downloading"  # downloading, extracting, complete, error
     started_at: datetime = field(default_factory=datetime.utcnow)
     error: Optional[str] = None
+    cancelled: Event = field(default_factory=Event, repr=False)
 
 
 @dataclass
@@ -32,21 +34,25 @@ class TaskManager:
         self._active_downloads: Dict[str, DownloadTask] = {}
         self._active_generations: Dict[str, GenerationTask] = {}
     
-    def start_download(self, model_name: str) -> None:
-        """Mark a download as started."""
+    def start_download(self, model_name: str) -> DownloadTask:
+        """Reuse a pending task so loaders keep the endpoint's cancellation token."""
+        current = self._active_downloads.get(model_name)
+        if current and current.status in ("downloading", "extracting"):
+            return current
         self._active_downloads[model_name] = DownloadTask(
             model_name=model_name,
             status="downloading",
         )
+        return self._active_downloads[model_name]
     
-    def complete_download(self, model_name: str) -> None:
+    def complete_download(self, model_name: str, task: Optional[DownloadTask] = None) -> None:
         """Mark a download as complete."""
-        if model_name in self._active_downloads:
+        if model_name in self._active_downloads and (task is None or self._active_downloads[model_name] is task):
             del self._active_downloads[model_name]
     
-    def error_download(self, model_name: str, error: str) -> None:
+    def error_download(self, model_name: str, error: str, task: Optional[DownloadTask] = None) -> None:
         """Mark a download as failed."""
-        if model_name in self._active_downloads:
+        if model_name in self._active_downloads and (task is None or self._active_downloads[model_name] is task):
             self._active_downloads[model_name].status = "error"
             self._active_downloads[model_name].error = error
     
@@ -86,11 +92,16 @@ class TaskManager:
         return list(self._active_generations.values())
     
     def cancel_download(self, model_name: str) -> bool:
-        """Cancel/dismiss a download task (removes it from active list)."""
-        return self._active_downloads.pop(model_name, None) is not None
+        """Signal the running transfer, then dismiss its UI task."""
+        task = self._active_downloads.pop(model_name, None)
+        if task:
+            task.cancelled.set()
+        return task is not None
 
     def clear_all(self) -> None:
         """Clear all download and generation tasks."""
+        for task in self._active_downloads.values():
+            task.cancelled.set()
         self._active_downloads.clear()
         self._active_generations.clear()
 

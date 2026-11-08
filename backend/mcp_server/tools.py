@@ -115,7 +115,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="voicebox.transcribe",
         description=(
-            "Transcribe an audio clip to text using Voicebox's local Whisper. "
+            "Transcribe an audio clip to text using Voicebox's selected local STT model. "
             "Pass exactly one of `audio_base64` (bytes as base64) or "
             "`audio_path` (absolute local file path — loopback callers only)."
         ),
@@ -297,17 +297,21 @@ def _speak_response(
 async def _transcribe_file(
     path: Path, language: str | None, model: str | None
 ) -> dict[str, Any]:
-    from ..backends import WHISPER_HF_REPOS
+    from ..backends import get_stt_model_configs
+    from ..database.session import SessionLocal
     from ..services import transcribe as transcribe_service
     from ..utils.audio import load_audio
 
     whisper = transcribe_service.get_whisper_model()
-    model_size = model or whisper.model_size
-    valid = list(WHISPER_HF_REPOS.keys())
+    with SessionLocal() as db:
+        model_size, language = transcribe_service.resolve_transcription_settings(model, language, db)
+    valid = [cfg.model_size for cfg in get_stt_model_configs()]
     if model_size not in valid:
         raise ValueError(
             f"Invalid STT model '{model_size}'. Must be one of: {', '.join(valid)}"
         )
+
+    whisper.validate_language(model_size, language)
 
     # load_audio is sync; keep the event loop responsive.
     audio, sr = await asyncio.to_thread(load_audio, str(path))
@@ -317,7 +321,7 @@ async def _transcribe_file(
         not whisper.is_loaded() or whisper.model_size != model_size
     ) and not whisper._is_model_cached(model_size):
         raise ValueError(
-            f"Whisper model '{model_size}' is not yet downloaded. Open "
+            f"STT model '{model_size}' is not yet downloaded. Open "
             "Voicebox → Settings → Models to download it first."
         )
 

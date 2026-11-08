@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import { useToast } from '@/components/ui/use-toast';
+import { isSTTLanguageSupported } from '@/lib/constants/stt';
 import { useDictationReadiness } from '@/lib/hooks/useDictationReadiness';
 import { useCaptureSettings } from '@/lib/hooks/useSettings';
 import { useProfiles } from '@/lib/hooks/useProfiles';
@@ -31,7 +32,7 @@ import { usePlatform } from '@/platform/PlatformContext';
 import { useServerStore } from '@/stores/serverStore';
 import { cn } from '@/lib/utils/cn';
 import { defaultChordKeys, displayLabelForKey, modifierSideHint } from '@/lib/utils/keyCodes';
-import type { Qwen3ModelSize, VoiceProfileResponse, WhisperModelSize } from '@/lib/api/types';
+import type { Qwen3ModelSize, STTModel, VoiceProfileResponse } from '@/lib/api/types';
 import { SettingRow, SettingSection } from './SettingRow';
 
 function ChordPreview({ keys }: { keys: string[] }) {
@@ -314,13 +315,26 @@ export function CapturesPage() {
       >
         <SettingRow
           title={t('settings.captures.transcription.model.title')}
-          description={t('settings.captures.transcription.model.description')}
+          description={t(
+            sttModel === 'parakeet-v3'
+              ? 'settings.captures.transcription.model.parakeetDescription'
+              : 'settings.captures.transcription.model.description',
+          )}
           action={
             <Select
               value={sttModel}
-              onValueChange={(v) => update({ stt_model: v as WhisperModelSize })}
+              onValueChange={(v) => {
+                const model = v as STTModel;
+                update({
+                  stt_model: model,
+                  language: isSTTLanguageSupported(model, language) ? language : 'auto',
+                });
+              }}
             >
-              <SelectTrigger className="w-[300px]">
+              <SelectTrigger
+                className="w-[300px]"
+                aria-label={t('settings.captures.transcription.model.title')}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -339,6 +353,7 @@ export function CapturesPage() {
                 <SelectItem value="turbo">
                   {t('settings.captures.transcription.model.turbo', { tail: t('settings.captures.transcription.model.tail.nearBest') })}
                 </SelectItem>
+                <SelectItem value="parakeet-v3">Parakeet v3 (Q8)</SelectItem>
               </SelectContent>
             </Select>
           }
@@ -346,10 +361,17 @@ export function CapturesPage() {
 
         <SettingRow
           title={t('settings.captures.transcription.language.title')}
-          description={t('settings.captures.transcription.language.description')}
+          description={t(
+            sttModel === 'parakeet-v3'
+              ? 'settings.captures.transcription.language.parakeetDescription'
+              : 'settings.captures.transcription.language.description',
+          )}
           action={
             <Select value={language} onValueChange={(v) => update({ language: v })}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger
+                className="w-[180px]"
+                aria-label={t('settings.captures.transcription.language.title')}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -358,9 +380,15 @@ export function CapturesPage() {
                 <SelectItem value="es">{t('settings.captures.transcription.language.es')}</SelectItem>
                 <SelectItem value="fr">{t('settings.captures.transcription.language.fr')}</SelectItem>
                 <SelectItem value="de">{t('settings.captures.transcription.language.de')}</SelectItem>
-                <SelectItem value="ja">{t('settings.captures.transcription.language.ja')}</SelectItem>
-                <SelectItem value="zh">{t('settings.captures.transcription.language.zh')}</SelectItem>
-                <SelectItem value="hi">{t('settings.captures.transcription.language.hi')}</SelectItem>
+                {isSTTLanguageSupported(sttModel, 'ja') && (
+                  <SelectItem value="ja">{t('settings.captures.transcription.language.ja')}</SelectItem>
+                )}
+                {isSTTLanguageSupported(sttModel, 'zh') && (
+                  <SelectItem value="zh">{t('settings.captures.transcription.language.zh')}</SelectItem>
+                )}
+                {isSTTLanguageSupported(sttModel, 'hi') && (
+                  <SelectItem value="hi">{t('settings.captures.transcription.language.hi')}</SelectItem>
+                )}
               </SelectContent>
             </Select>
           }

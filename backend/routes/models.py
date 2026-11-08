@@ -82,7 +82,7 @@ async def unload_model_by_name(model_name: str):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
 
     try:
-        was_loaded = unload_model_by_config(config)
+        was_loaded = await asyncio.to_thread(unload_model_by_config, config)
         if not was_loaded:
             return {"message": f"Model {model_name} is not loaded"}
         return {"message": f"Model {model_name} unloaded successfully"}
@@ -243,7 +243,7 @@ async def get_model_status():
     except ImportError:
         use_scan_cache = False
 
-    from ..backends import get_all_model_configs, check_model_loaded
+    from ..backends import get_all_model_configs, check_model_cached, check_model_loaded
 
     registry_configs = get_all_model_configs()
     model_configs = [
@@ -252,7 +252,9 @@ async def get_model_status():
             "display_name": cfg.display_name,
             "hf_repo_id": cfg.hf_repo_id,
             "model_size": cfg.model_size,
+            "weight_filename": cfg.weight_filename,
             "check_loaded": lambda c=cfg: check_model_loaded(c),
+            "check_cached": lambda c=cfg: check_model_cached(c),
         }
         for cfg in registry_configs
     ]
@@ -283,7 +285,8 @@ async def get_model_status():
                         for rev in repo.revisions:
                             for f in rev.files:
                                 fname = f.file_name.lower()
-                                if fname.endswith((".safetensors", ".bin", ".pt", ".pth", ".npz")):
+                                if (fname == config["weight_filename"] if config["weight_filename"] else
+                                        fname.endswith((".safetensors", ".bin", ".pt", ".pth", ".npz"))):
                                     has_model_weights = True
                                     break
                             if has_model_weights:
@@ -320,13 +323,14 @@ async def get_model_status():
                             snapshots_dir = repo_cache / "snapshots"
                             has_model_files = False
                             if snapshots_dir.exists():
-                                has_model_files = (
+                                has_model_files = (any(snapshots_dir.rglob(config["weight_filename"]))
+                                    if config["weight_filename"] else (
                                     any(snapshots_dir.rglob("*.bin"))
                                     or any(snapshots_dir.rglob("*.safetensors"))
                                     or any(snapshots_dir.rglob("*.pt"))
                                     or any(snapshots_dir.rglob("*.pth"))
                                     or any(snapshots_dir.rglob("*.npz"))
-                                )
+                                ))
 
                             if has_model_files:
                                 downloaded = True
@@ -341,6 +345,11 @@ async def get_model_status():
                                     pass
                 except Exception:
                     pass
+
+            if config["weight_filename"]:
+                downloaded = config["check_cached"]()
+                if not downloaded:
+                    size_mb = None
 
             try:
                 loaded = config["check_loaded"]()
@@ -399,18 +408,17 @@ async def trigger_model_download(request: models.ModelDownloadRequest):
     if not config:
         raise HTTPException(status_code=400, detail=f"Unknown model: {request.model_name}")
 
-    load_func = get_model_load_func(config)
+    download_task = task_manager.start_download(request.model_name)
+    load_func = get_model_load_func(config, download_task=download_task)
 
     async def download_in_background():
         try:
             result = load_func()
             if asyncio.iscoroutine(result):
                 await result
-            task_manager.complete_download(request.model_name)
+            task_manager.complete_download(request.model_name, download_task)
         except Exception as e:
-            task_manager.error_download(request.model_name, str(e))
-
-    task_manager.start_download(request.model_name)
+            task_manager.error_download(request.model_name, str(e), download_task)
 
     progress_manager.update_progress(
         model_name=request.model_name,
@@ -457,7 +465,7 @@ async def delete_model(model_name: str):
     hf_repo_id = config.hf_repo_id
 
     try:
-        unload_model_by_config(config)
+        await asyncio.to_thread(unload_model_by_config, config)
 
         cache_dir = hf_constants.HF_HUB_CACHE
         repo_cache_dir = Path(cache_dir) / ("models--" + hf_repo_id.replace("/", "--"))

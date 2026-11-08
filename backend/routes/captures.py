@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from .. import config, models
-from ..backends import get_llm_model_configs, get_stt_model_configs
+from ..backends import check_model_cached, get_llm_model_configs, get_stt_model_configs
 from ..backends.base import is_model_cached
 from ..database import Capture as DBCapture, get_db
 from ..services import captures as captures_service
@@ -184,7 +184,7 @@ async def capture_readiness_endpoint(db: Session = Depends(get_db)):
 
     return models.CaptureReadinessResponse(
         stt=models.ModelReadiness(
-            ready=is_model_cached(stt_cfg.hf_repo_id),
+            ready=check_model_cached(stt_cfg),
             model_name=stt_cfg.model_name,
             display_name=stt_cfg.display_name,
             size=stt_cfg.model_size,
@@ -222,6 +222,8 @@ async def retranscribe_capture_endpoint(
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=410, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Retranscribe failed for capture %s", capture_id)
         raise HTTPException(status_code=500, detail=str(e))

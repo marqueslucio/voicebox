@@ -43,6 +43,9 @@ def build_server(cuda=False, rocm=False):
     else:
         binary_name = "voicebox-server"
 
+    # Native Parakeet uses the SDK's stable C ABI; preserve its relative library layout.
+    native_runtime = backend_dir / "native" / "nemo-speech"
+
     # PyInstaller arguments
     # CUDA and ROCm builds use --onedir so we can split the output into two archives:
     #   1. Server core (~200-400MB) — versioned with the app
@@ -56,6 +59,15 @@ def build_server(cuda=False, rocm=False):
         "--name",
         binary_name,
     ]
+
+    if is_apple_silicon() and not cuda and not rocm:
+        if not (native_runtime / "lib/libnemo_speech_asr_c.1.dylib").is_file():
+            raise RuntimeError("Native Parakeet runtime is missing from backend/native/nemo-speech")
+        for library in sorted((native_runtime / "lib").glob("*.dylib")):
+            args.extend(["--add-binary", f"{library}:backend/native/nemo-speech/lib"])
+        args.extend(["--add-data", f"{native_runtime / 'licenses'}:backend/native/nemo-speech/licenses"])
+        args.extend(["--hidden-import", "backend.backends.parakeet_backend",
+                     "--hidden-import", "backend.backends.stt_backend"])
 
     # Hide console window on Windows only. On macOS/Linux the sidecar needs
     # stdout/stderr for Tauri to capture logs.

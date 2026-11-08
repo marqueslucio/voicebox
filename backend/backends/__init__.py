@@ -55,6 +55,7 @@ class ModelConfig:
     hf_repo_id: str  # e.g. "YatharthS/LuxTTS"
     model_size: str = "default"
     size_mb: int = 0
+    weight_filename: Optional[str] = None
     needs_trim: bool = False
     retries_runaway: bool = False
     supports_instruct: bool = False
@@ -472,7 +473,7 @@ def get_all_model_configs() -> list[ModelConfig]:
         _get_qwen_model_configs()
         + _get_qwen_custom_voice_configs()
         + _get_non_qwen_tts_configs()
-        + _get_whisper_configs()
+        + get_stt_model_configs()
         + _get_qwen_llm_configs()
     )
 
@@ -488,11 +489,33 @@ def get_llm_model_configs() -> list[ModelConfig]:
 
 
 def get_stt_model_configs() -> list[ModelConfig]:
-    """Return only STT (Whisper) model configs."""
-    return _get_whisper_configs()
+    """Return Whisper and quantized native Parakeet STT models."""
+    from .parakeet_backend import HF_REPO, LANGUAGES, MODEL_FILENAME, MODEL_NAME, MODEL_SIZE
+
+    return _get_whisper_configs() + [ModelConfig(
+        model_name=MODEL_NAME,
+        display_name="Parakeet v3 (Q8)",
+        engine="parakeet",
+        hf_repo_id=HF_REPO,
+        model_size=MODEL_SIZE,
+        size_mb=714,
+        weight_filename=MODEL_FILENAME,
+        languages=sorted(LANGUAGES),
+    )]
 
 
 # Lookup helpers — these replace the if/elif chains in main.py
+
+
+def check_model_cached(config: ModelConfig) -> bool:
+    """Native Q8 readiness must match the pinned file used by its loader."""
+    if config.engine == "parakeet":
+        from .parakeet_backend import ParakeetSTTBackend
+
+        return ParakeetSTTBackend()._is_model_cached(config.model_size)
+    from .base import is_model_cached
+
+    return is_model_cached(config.hf_repo_id)
 
 
 def get_model_config(model_name: str) -> Optional[ModelConfig]:
@@ -567,12 +590,8 @@ def unload_model_by_config(config: ModelConfig) -> bool:
     from . import get_tts_backend_for_engine
     from ..services import tts, transcribe, llm as llm_service
 
-    if config.engine == "whisper":
-        whisper_model = transcribe.get_whisper_model()
-        if whisper_model.is_loaded() and whisper_model.model_size == config.model_size:
-            transcribe.unload_whisper_model()
-            return True
-        return False
+    if config.engine in ("whisper", "parakeet"):
+        return transcribe.get_whisper_model().unload_model(config.model_size)
 
     if config.engine == "qwen_llm":
         backend = llm_service.get_llm_model()
@@ -612,7 +631,7 @@ def check_model_loaded(config: ModelConfig) -> bool:
     from ..services import tts, transcribe, llm as llm_service
 
     try:
-        if config.engine == "whisper":
+        if config.engine in ("whisper", "parakeet"):
             whisper_model = transcribe.get_whisper_model()
             return whisper_model.is_loaded() and getattr(whisper_model, "model_size", None) == config.model_size
 
@@ -637,13 +656,13 @@ def check_model_loaded(config: ModelConfig) -> bool:
         return False
 
 
-def get_model_load_func(config: ModelConfig):
+def get_model_load_func(config: ModelConfig, download_task=None):
     """Return a callable that loads/downloads the model."""
     from . import get_tts_backend_for_engine
     from ..services import tts, transcribe, llm as llm_service
 
-    if config.engine == "whisper":
-        return lambda: transcribe.get_whisper_model().load_model(config.model_size)
+    if config.engine in ("whisper", "parakeet"):
+        return lambda: transcribe.get_whisper_model().load_model(config.model_size, download_task=download_task)
 
     if config.engine == "qwen":
         return lambda: tts.get_tts_model().load_model(config.model_size)
@@ -740,16 +759,9 @@ def get_stt_backend() -> STTBackend:
     global _stt_backend
 
     if _stt_backend is None:
-        backend_type = get_backend_type()
+        from .stt_backend import STTBackendRouter
 
-        if backend_type == "mlx":
-            from .mlx_backend import MLXSTTBackend
-
-            _stt_backend = MLXSTTBackend()
-        else:
-            from .pytorch_backend import PyTorchSTTBackend
-
-            _stt_backend = PyTorchSTTBackend()
+        _stt_backend = STTBackendRouter()
 
     return _stt_backend
 
