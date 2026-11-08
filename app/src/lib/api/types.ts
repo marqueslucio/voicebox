@@ -24,6 +24,7 @@ export interface RefinementFlags {
 export interface CaptureResponse {
   id: string;
   audio_path: string;
+  audio_available: boolean;
   source: CaptureSource;
   language?: string | null;
   duration_ms?: number | null;
@@ -53,6 +54,8 @@ export interface CaptureCreateResponse extends CaptureResponse {
 }
 
 export interface CaptureSettings {
+  audio_retention_hours: number;
+  history_retention_days: number;
   stt_model: STTModel;
   language: string;
   auto_refine: boolean;

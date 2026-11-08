@@ -9,7 +9,8 @@ import { InputMonitoringNotice } from '@/components/InputMonitoringGate/InputMon
 import { ChordPicker } from '@/components/ChordPicker/ChordPicker';
 import { TitleBarDragRegion } from '@/components/TitleBarDragRegion';
 import { apiClient } from '@/lib/api/client';
-import type { STTModel } from '@/lib/api/types';
+import type { CaptureSettings, CaptureSettingsUpdate, STTModel } from '@/lib/api/types';
+import { parseRetention } from '@/lib/retention';
 import { isSTTLanguageSupported } from '@/lib/constants/stt';
 import { useCaptureRecordingSession } from '@/lib/hooks/useCaptureRecordingSession';
 import { useDictationReadiness } from '@/lib/hooks/useDictationReadiness';
@@ -27,12 +28,18 @@ export function DictationApp() {
   const [error, setError] = useState<string | null>(null);
   const [chord, setChord] = useState<'push' | 'toggle' | null>(null);
   const [deleteModel, setDeleteModel] = useState<string | null>(null);
-  const { settings, update } = useCaptureSettings();
+  const { settings, isError: settingsError, update, updateAsync } = useCaptureSettings();
   const readiness = useDictationReadiness();
   const captures = useQuery({
     queryKey: ['captures', historyPage],
     queryFn: () => apiClient.listCaptures(50, historyPage * 50),
+    refetchInterval: 60_000,
   });
+  useEffect(() => {
+    if (!captures.data) return;
+    const lastPage = Math.max(0, Math.ceil(captures.data.total / 50) - 1);
+    if (historyPage > lastPage) setHistoryPage(lastPage);
+  }, [captures.data, historyPage]);
   const models = useQuery({
     queryKey: ['model-status'],
     queryFn: () => apiClient.getModelStatus(),
@@ -354,6 +361,12 @@ export function DictationApp() {
                 </p>
               )}
             </section>
+            {settingsError && (
+              <p role="alert" className="text-sm text-destructive">
+                Could not load settings.
+              </p>
+            )}
+            {settings && <RetentionSettings settings={settings} save={updateAsync} />}
             <section>
               <h2 className="font-semibold text-lg">Shortcuts & permissions</h2>
               <label className="flex items-center justify-between py-4 text-sm">
@@ -403,5 +416,96 @@ export function DictationApp() {
         )}
       </main>
     </div>
+  );
+}
+
+function RetentionSettings({
+  settings,
+  save,
+}: {
+  settings: CaptureSettings;
+  save: (patch: CaptureSettingsUpdate) => Promise<CaptureSettings>;
+}) {
+  const [audio, setAudio] = useState(String(settings.audio_retention_hours));
+  const [history, setHistory] = useState(String(settings.history_retention_days));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const hours = parseRetention(audio, 876000);
+    const days = parseRetention(history, 36500);
+    if (hours === null || days === null) {
+      setError('Enter whole numbers from 1 to 876,000 hours and 1 to 36,500 days.');
+      setMessage(null);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const saved = await save({ audio_retention_hours: hours, history_retention_days: days });
+      setAudio(String(saved.audio_retention_hours));
+      setHistory(String(saved.history_retention_days));
+      setMessage('Retention settings saved.');
+    } catch (err) {
+      setError(`Could not save retention settings: ${String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="font-semibold text-lg">Storage</h2>
+      <p className="text-sm text-muted-foreground mt-1">
+        Transcripts remain available to copy until their history period expires. Cleanup runs on
+        startup and hourly.
+      </p>
+      <form onSubmit={submit} className="mt-4 space-y-4" noValidate>
+        <label className="block text-sm">
+          Delete dictation audio after (hours)
+          <input
+            className="mt-1 w-full rounded-lg border border-border bg-background p-2"
+            type="text"
+            inputMode="numeric"
+            value={audio}
+            onChange={(event) => {
+              setAudio(event.target.value);
+              setMessage(null);
+            }}
+            disabled={saving}
+          />
+        </label>
+        <label className="block text-sm">
+          Delete history after (days)
+          <input
+            className="mt-1 w-full rounded-lg border border-border bg-background p-2"
+            type="text"
+            inputMode="numeric"
+            value={history}
+            onChange={(event) => {
+              setHistory(event.target.value);
+              setMessage(null);
+            }}
+            disabled={saving}
+          />
+        </label>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        {message && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {message}
+          </p>
+        )}
+        <button className={button} type="submit" disabled={saving}>
+          {saving ? 'Saving…' : 'Save retention settings'}
+        </button>
+      </form>
+    </section>
   );
 }

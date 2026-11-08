@@ -51,6 +51,8 @@ export function useCaptureSettings() {
   return {
     settings: query.data,
     isLoading: query.isLoading,
+    isError: query.isError,
     update: mutation.mutate,
+    updateAsync: mutation.mutateAsync,
   };
 }
