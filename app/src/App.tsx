@@ -54,11 +54,10 @@ function MainApp() {
   // Replay the saved chord into the Rust hotkey listener every time
   // capture_settings resolves or the user edits the chord.
 
-  // Sync stored setting to Rust on startup
+  // A real quit always stops this app's transcription server.
   useEffect(() => {
     if (platform.metadata.isTauri) {
-      const keepRunning = useServerStore.getState().keepServerRunningOnClose;
-      platform.lifecycle.setKeepServerRunning(keepRunning).catch((error) => {
+      platform.lifecycle.setKeepServerRunning(false).catch((error) => {
         console.error('Failed to sync initial setting to Rust:', error);
       });
     }

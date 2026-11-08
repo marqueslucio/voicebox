@@ -88,6 +88,7 @@ export const useServerStore = create<ServerStore>()(
         ...(persisted as Partial<ServerStore>),
         serverUrl: getDefaultServerUrl(),
         mode: 'local',
+        keepServerRunningOnClose: false,
       }),
     },
   ),
