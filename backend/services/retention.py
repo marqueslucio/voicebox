@@ -61,6 +61,22 @@ def audio_available(stored_path: str) -> bool:
         return False
 
 
+def remove_audio(stored_path: str) -> None:
+    """Remove a capture's own audio without following a directory or file symlink."""
+    name = _capture_name(stored_path)
+    if name is None:
+        return
+    try:
+        fd = _open_capture_dir()
+    except FileNotFoundError:
+        return
+    try:
+        if _file_size(fd, name) is not None:
+            os.unlink(name, dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
 def sweep(db, *, now: datetime | None = None, dry_run: bool = False) -> dict[str, int]:
     """Delete eligible records; report actual or, for dry_run, planned counts and bytes."""
     now = now or datetime.now(timezone.utc)

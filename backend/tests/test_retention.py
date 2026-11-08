@@ -213,3 +213,34 @@ async def test_periodic_sweep_runs_after_interval_and_stops(monkeypatch):
     monkeypatch.setattr(retention.asyncio, "to_thread", run_in_thread)
     await retention.periodic_sweep(retention.asyncio.Event())
     assert calls == [retention.run_sweep]
+
+
+def test_manual_delete_never_follows_capture_symlink(db, tmp_path):
+    from backend.services.captures import delete_capture
+
+    root = tmp_path / "captures"
+    root.mkdir()
+    external = tmp_path / "external.wav"
+    external.write_bytes(b"protected")
+    (root / "link.wav").symlink_to(external)
+    add(db, "link", timedelta(hours=1), path="captures/link.wav")
+    with pytest.raises(ValueError):
+        delete_capture("link", db)
+    assert external.read_bytes() == b"protected"
+    assert db.query(Capture).count() == 1
+
+
+def test_manual_delete_preserves_row_when_unlink_fails(db, tmp_path, monkeypatch):
+    from backend.services.captures import delete_capture
+
+    root = tmp_path / "captures"
+    root.mkdir()
+    (root / "safe.wav").write_bytes(b"audio")
+    add(db, "safe", timedelta(hours=1))
+    def fail(*args, **kwargs):
+        raise PermissionError("denied")
+    monkeypatch.setattr(os, "unlink", fail)
+    with pytest.raises(PermissionError):
+        delete_capture("safe", db)
+    assert db.query(Capture).count() == 1
+    assert (root / "safe.wav").exists()

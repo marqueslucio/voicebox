@@ -108,7 +108,11 @@ async def get_capture_audio_endpoint(capture_id: str, db: Session = Depends(get_
 
 @router.delete("/captures/{capture_id}")
 async def delete_capture_endpoint(capture_id: str, db: Session = Depends(get_db)):
-    deleted = captures_service.delete_capture(capture_id, db)
+    try:
+        deleted = captures_service.delete_capture(capture_id, db)
+    except (OSError, ValueError) as e:
+        logger.exception("Could not safely delete capture %s", capture_id)
+        raise HTTPException(status_code=500, detail="Could not safely delete capture audio") from e
     if not deleted:
         raise HTTPException(status_code=404, detail="Capture not found")
     return {"message": f"Capture {capture_id} deleted"}

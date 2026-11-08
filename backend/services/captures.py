@@ -22,7 +22,7 @@ from ..database import Capture as DBCapture
 from ..models import CaptureResponse, RefinementFlagsModel
 from ..utils.audio import load_audio
 from .transcript_cleanup import collapse_repetitive_artifacts
-from .retention import audio_available
+from .retention import audio_available, remove_audio
 from .transcribe import get_whisper_model
 
 logger = logging.getLogger(__name__)
@@ -201,12 +201,7 @@ def delete_capture(capture_id: str, db: Session) -> bool:
     if not row:
         return False
 
-    resolved = config.resolve_storage_path(row.audio_path)
-    if resolved and resolved.exists():
-        try:
-            resolved.unlink()
-        except OSError:
-            logger.exception("Failed to remove capture audio %s", resolved)
+    remove_audio(row.audio_path)
 
     db.delete(row)
     db.commit()
